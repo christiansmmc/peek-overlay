@@ -108,7 +108,7 @@ fn main() {
         }
         // The overlay already placed itself again; just make the event visible.
         NativeEvent::DisplayChanged => println!("display changed"),
-        NativeEvent::Timer(_) => {}
+        NativeEvent::Timer(_) | NativeEvent::Foreground(_) => {}
     }));
     let combo: Vec<String> = ["Ctrl", "Shift", "O"].iter().map(|s| s.to_string()).collect();
     if native.register_hotkey(hotkey::parse(&combo).expect("valid combo")).is_err() {

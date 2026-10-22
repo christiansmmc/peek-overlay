@@ -1,21 +1,28 @@
 //! Dedicated native thread: a message-only window that owns the global hotkey and the timers,
-//! plus the overlay window (created on the first `NativeCmd::Overlay`).
+//! the foreground WinEvent hook, plus the overlay window (created on the first `NativeCmd::Overlay`).
 //! Later tasks extend `NativeCmd`/`NativeEvent` and the single dispatch in `handle_cmd`.
+
+pub mod foreground;
+pub mod process_watch;
 
 use crate::hotkey::{Hotkey, HotkeyError};
 use crate::overlay::window::{OverlayCmd, OverlayWindow, WM_OVERLAY_DISPLAY_CHANGED};
+use foreground::ForegroundInfo;
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::GetCurrentProcessId;
+use windows::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE,
-    KillTimer, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    CHILDID_SELF, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_SYSTEM_FOREGROUND,
+    GetForegroundWindow, GetMessageW, HWND_MESSAGE, KillTimer, MSG, OBJID_WINDOW, PostMessageW, PostQuitMessage,
+    RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER, WNDCLASSW,
 };
 use windows::core::w;
 
@@ -75,6 +82,9 @@ pub enum NativeEvent {
     Timer(TimerKind),
     /// Display resolution, layout or DPI changed (seen by the overlay window).
     DisplayChanged,
+    /// A window of another process came to the foreground; also sent once at startup for the
+    /// window that is already in the foreground.
+    Foreground(ForegroundInfo),
 }
 
 pub enum NativeCmd {
@@ -159,11 +169,37 @@ fn run_thread(
     });
     let _ = ready_tx.send(hwnd.0 as isize);
 
+    // Out-of-context: the callback runs on this thread, from the message loop below.
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_SYSTEM_FOREGROUND,
+            EVENT_SYSTEM_FOREGROUND,
+            None,
+            Some(on_win_event),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if hook.is_invalid() {
+        crate::trace!("native: SetWinEventHook(EVENT_SYSTEM_FOREGROUND) failed");
+    }
+    // The hook only reports changes; start from the window that already has the focus.
+    let current = unsafe { GetForegroundWindow() };
+    if let Some(info) = foreground::describe(current.0 as isize)
+        && info.pid != unsafe { GetCurrentProcessId() }
+    {
+        emit(NativeEvent::Foreground(info));
+    }
+
     let mut msg = MSG::default();
     unsafe {
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        if !hook.is_invalid() {
+            let _ = UnhookWinEvent(hook);
         }
     }
     // Drop the state (and the overlay window) with the borrow already released.
@@ -198,6 +234,23 @@ fn create_window() -> Option<HWND> {
             None,
         )
         .ok()
+    }
+}
+
+unsafe extern "system" fn on_win_event(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event != EVENT_SYSTEM_FOREGROUND || id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
+        return;
+    }
+    if let Some(info) = foreground::describe(hwnd.0 as isize) {
+        emit(NativeEvent::Foreground(info));
     }
 }
 
