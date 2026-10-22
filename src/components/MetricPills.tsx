@@ -47,8 +47,8 @@ interface Props {
   availability: Availability;
   driver: DriverState;
   onToggle(k: keyof Metrics): void;
-  /** "CPU temp." clicked while the driver is not installed (Task 15 opens the driver sheet). */
-  onNeedsDriver?(): void;
+  /** "CPU temp." clicked while the driver is not installed (opens the driver sheet). */
+  onNeedsDriver(): void;
 }
 
 /** "Métricas": one pill per metric; unavailable ones are dashed and don't respond. */
@@ -62,7 +62,7 @@ export function MetricPills({ metrics, availability, driver, onToggle, onNeedsDr
           const on = p.kind === 'normal' && metrics[k];
           const click = () => {
             if (p.kind === 'normal') onToggle(k);
-            else if (p.kind === 'driver') onNeedsDriver?.();
+            else if (p.kind === 'driver') onNeedsDriver();
           };
           return (
             <button key={k} class={on ? 'pill on' : p.kind === 'disabled' ? 'pill disabled' : 'pill'} title={p.title} onClick={click}>

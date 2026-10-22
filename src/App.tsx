@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { DriverSheet } from './components/DriverSheet';
 import { GeneralToggles } from './components/GeneralToggles';
 import { MetricPills } from './components/MetricPills';
 import { Preview } from './components/Preview';
 import { Segmented } from './components/Segmented';
 import { Slider } from './components/Slider';
+import { ShortcutField } from './components/ShortcutField';
 import { StatusRow } from './components/StatusRow';
 import { TitleBar } from './components/TitleBar';
+import { Toast } from './components/Toast';
 import { api } from './ipc';
 import { exampleSample, nextExample } from './mock';
-import type { AppState, Metrics, MetricsSample, Settings, Style } from './types';
+import type { AppState, DriverState, Metrics, MetricsSample, Settings, Style } from './types';
 
 /** Partial settings for `update_settings`, which merges nested objects. */
 type SettingsPatch = Partial<Omit<Settings, 'metrics' | 'general'>> & {
@@ -42,49 +45,51 @@ function useExampleSample(active: boolean): MetricsSample {
   return sample;
 }
 
-/** Static shortcut row. Task 15 replaces it with the capture field (ShortcutField). */
-function ShortcutRowPlaceholder({ shortcut }: { shortcut: string[] }) {
-  return (
-    <div class="shortcut">
-      <div class="shortcut-text">
-        <span class="shortcut-title">Atalho mostrar/esconder</span>
-        <span class="shortcut-hint">Clique no campo e pressione a nova combinação</span>
-      </div>
-      <button class="shortcut-field" tabIndex={-1}>
-        {shortcut.map((k) => (
-          <span key={k} class="keycap">
-            {k}
-          </span>
-        ))}
-      </button>
-    </div>
-  );
-}
-
 export function App() {
   const [st, setSt] = useState<AppState | null>(null);
   const [live, setLive] = useState<MetricsSample | null>(null);
   // Settings updates still waiting for their reply. Meanwhile the screen keeps the local value,
   // and the last reply (not an older `settings` event) becomes the state.
   const pending = useRef(0);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const driverNow = useRef<DriverState>('missing');
   const example = useExampleSample(st != null && st.status.gameName == null);
+
+  const flash = (text: string) => {
+    clearTimeout(toastTimer.current);
+    setToast(text);
+    toastTimer.current = setTimeout(() => setToast(null), 2600);
+  };
 
   useEffect(() => {
     let alive = true;
     const offs = [
       api.on('status', (status) => setSt((s) => s && { ...s, status })),
       api.on('availability', (availability) => setSt((s) => s && { ...s, availability })),
-      api.on('driver', (driver) => setSt((s) => s && { ...s, driver })),
+      api.on('driver', (driver) => {
+        const wasInstalling = driverNow.current === 'installing';
+        driverNow.current = driver;
+        setSt((s) => s && { ...s, driver });
+        if (driver === 'installed' && wasInstalling) {
+          setSheetOpen(false);
+          flash('Driver instalado. Temperatura da CPU ativada.');
+        }
+      }),
       api.on('settings', (settings) => {
         if (pending.current === 0) setSt((s) => s && { ...s, settings });
       }),
       api.on('metrics', setLive),
     ];
     api.getState().then((s) => {
-      if (alive) setSt(s);
+      if (!alive) return;
+      driverNow.current = s.driver;
+      setSt(s);
     });
     return () => {
       alive = false;
+      clearTimeout(toastTimer.current);
       for (const off of offs) off.then((f) => f());
     };
   }, []);
@@ -130,15 +135,31 @@ export function App() {
           availability={st.availability}
           driver={st.driver}
           onToggle={(k) => update({ metrics: { [k]: !settings.metrics[k] } })}
+          onNeedsDriver={() => setSheetOpen(true)}
         />
         <div class="controls">
           <Segmented label="Estilo" options={STYLES} value={settings.style} onChange={(style) => update({ style })} />
           <Slider label="Tamanho" value={settings.size} min={75} max={200} step={5} onChange={(size) => update({ size })} />
           <Slider label="Opacidade" value={settings.opacity} min={30} max={100} step={5} onChange={(opacity) => update({ opacity })} />
         </div>
-        <ShortcutRowPlaceholder shortcut={settings.shortcut} />
+        <ShortcutField
+          shortcut={settings.shortcut}
+          hotkeyError={st.hotkeyError}
+          onChanged={(combo) => {
+            setSt((s) => s && { ...s, hotkeyError: null });
+            flash(`Atalho alterado para ${combo.join(' + ')}`);
+          }}
+        />
         <GeneralToggles general={settings.general} onToggle={(k) => update({ general: { [k]: !settings.general[k] } })} />
       </div>
+      {toast && <Toast text={toast} />}
+      {sheetOpen && (
+        <DriverSheet
+          driver={st.driver}
+          onInstall={() => api.installDriver().catch((e) => console.error('install_driver failed:', e))}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
     </div>
   );
 }

@@ -110,6 +110,28 @@ button {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* Rows never get cut off: if the pills wrap to a third row, the panel scrolls. */
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+}
+.panel > * {
+  flex-shrink: 0;
+}
+.panel::-webkit-scrollbar {
+  width: 6px;
+}
+.panel::-webkit-scrollbar-track {
+  background: transparent;
+  margin: 12px 0;
+}
+.panel::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.18);
+}
+.panel::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 /* Status row */
@@ -496,7 +518,7 @@ button {
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
 }
 
-/* Shortcut row (Task 15 adds the capture states) */
+/* Shortcut row */
 .shortcut {
   display: flex;
   align-items: center;
@@ -533,6 +555,23 @@ button {
   gap: 4px;
   cursor: pointer;
   outline: none;
+}
+.shortcut-field:hover {
+  background: rgba(0, 0, 0, 0.38);
+}
+.shortcut-field.err {
+  border-color: oklch(0.72 0.15 25 / 0.7);
+}
+.shortcut-field.capturing {
+  border-color: var(--p);
+  box-shadow: 0 0 0 3px oklch(0.72 0.15 290 / 0.25);
+}
+.shortcut-hint.err {
+  color: var(--err);
+}
+.shortcut-placeholder {
+  font-size: 12px;
+  color: oklch(0.82 0.1 290);
 }
 .keycap {
   padding: 3px 7px;
@@ -590,4 +629,138 @@ button {
 .toggle-row.on .switch-knob {
   left: 18px;
   background: #0b0b12;
+}
+
+/* Toast */
+.toast {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  bottom: 29px; /* 16px above the panel padding box (12px margin + 1px border) */
+  transform: translateX(-50%);
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: rgba(24, 24, 36, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+/* Driver sheet */
+.scrim {
+  position: absolute;
+  z-index: 5;
+  top: 40px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(6, 6, 12, 0.55);
+  display: flex;
+  align-items: flex-end;
+  padding: 12px;
+  box-sizing: border-box;
+}
+.sheet {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 18px 18px 16px;
+  border-radius: 16px;
+  background: rgba(30, 28, 46, 0.9);
+  backdrop-filter: blur(30px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sheet-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.sheet-title.err {
+  color: var(--err);
+}
+.sheet-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--t75);
+  text-wrap: pretty;
+}
+.sheet-installing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.sheet-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.btn-secondary {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.btn-primary {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 8px;
+  border: 0;
+  background: var(--p);
+  color: #0b0b12;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn-primary:hover {
+  background: var(--p-light);
+}
+.spinner {
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #fff;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* The installer reports no percentage, so the bar is indeterminate. */
+.progress {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+  margin-top: 4px;
+}
+.progress-bar {
+  height: 100%;
+  width: 35%;
+  background: var(--p);
+  border-radius: 2px;
+  animation: indeterminate 1.3s ease-in-out infinite;
+}
+@keyframes indeterminate {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(285%);
+  }
 }
