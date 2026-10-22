@@ -33,8 +33,7 @@ fn parse_hex(s: &str) -> Option<u32> {
 
 /// Sums the `3D` engines of all processes per adapter, limited to 100, and picks the adapter:
 /// the game's (its busiest 3D instance), else `default_luid`, else the busiest adapter.
-/// `default_luid` only counts when some process uses it: every process that opens an adapter
-/// gets a 3D instance there, so an absent one is stale (e.g. its LUID changed after a driver reset).
+/// An adapter without 3D instances (e.g. an idle, powered-down dedicated GPU) reads 0.
 pub fn pick_adapter_usage(
     samples: &[(EngineInstance, f64)],
     game_pid: Option<u32>,
@@ -54,9 +53,8 @@ pub fn pick_adapter_usage(
             .max_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(inst, _)| inst.luid)
     });
-    let default = default_luid.filter(|d| sums.iter().any(|(luid, _)| luid == d));
     let busiest = || sums.iter().max_by(|a, b| a.1.total_cmp(&b.1)).map(|(luid, _)| *luid);
-    let luid = game.or(default).or_else(busiest)?;
+    let luid = game.or(default_luid).or_else(busiest)?;
     let sum = sums.iter().find(|(l, _)| *l == luid).map_or(0.0, |(_, sum)| *sum);
     Some((luid, percent(sum)))
 }
@@ -83,21 +81,11 @@ impl GpuUsage {
     /// Every instance of the last collect that has a valid value.
     fn read_instances(&mut self) -> Option<Vec<(EngineInstance, f64)>> {
         let counter = self.query.counter();
-        let (mut size, mut count) = (0u32, 0u32);
-        let status =
-            unsafe { PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, None) };
-        if status != PDH_MORE_DATA {
-            return None;
-        }
-        self.buf.resize((size as usize).div_ceil(size_of::<u64>()), 0);
-        let items = self.buf.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-        let status =
-            unsafe { PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, &mut size, &mut count, Some(items)) };
-        if status != 0 {
-            return None;
-        }
+        let count = fill_array(&mut self.buf, |size, count, items| unsafe {
+            PdhGetFormattedCounterArrayW(counter, PDH_FMT_DOUBLE, size, count, items)
+        })?;
         // SAFETY: PDH wrote `count` items at the start of `buf`, and their names after them.
-        let items = unsafe { std::slice::from_raw_parts(items, count as usize) };
+        let items = unsafe { std::slice::from_raw_parts(self.buf.as_ptr().cast::<Item>(), count) };
         let samples = items
             .iter()
             .filter(|item| pdh_value_ok(item.FmtValue.CStatus))
@@ -108,6 +96,31 @@ impl GpuUsage {
             .collect();
         Some(samples)
     }
+}
+
+type Item = PDH_FMT_COUNTERVALUE_ITEM_W;
+
+/// How many times a fill that hit PDH_MORE_DATA is retried with the updated size.
+const FILL_ATTEMPTS: u32 = 3;
+
+/// PDH's two-call protocol for `PdhGetFormattedCounterArrayW`: ask for the size, then fill `buf`.
+/// An instance can appear between the calls (e.g. a game starting), so a fill that still gets
+/// PDH_MORE_DATA is retried with the size PDH just reported. Returns the item count.
+fn fill_array(
+    buf: &mut Vec<u64>,
+    mut call: impl FnMut(&mut u32, &mut u32, Option<*mut Item>) -> u32,
+) -> Option<usize> {
+    let (mut size, mut count) = (0u32, 0u32);
+    let mut status = call(&mut size, &mut count, None);
+    for _ in 0..FILL_ATTEMPTS {
+        if status != PDH_MORE_DATA {
+            break;
+        }
+        buf.resize((size as usize).div_ceil(size_of::<u64>()), 0);
+        status = call(&mut size, &mut count, Some(buf.as_mut_ptr().cast()));
+    }
+    let fits = size as usize <= buf.len() * size_of::<u64>();
+    (status == 0 && fits).then_some(count as usize)
 }
 
 #[cfg(test)]
@@ -131,5 +144,39 @@ mod tests {
         assert_eq!(pick_adapter_usage(&s, None, Some(b)), Some((b, 10)));
         assert_eq!(pick_adapter_usage(&s, Some(999), None), Some((a, 90)));
         assert_eq!(pick_adapter_usage(&[(inst(1, a, "3D"), 80.0), (inst(2, a, "3D"), 45.0)], None, None), Some((a, 100)));
+    }
+    #[test]
+    fn idle_default_adapter_without_3d_instances_reads_zero() {
+        // Laptop: dedicated GPU powered down (no instances), integrated GPU busy.
+        let (igpu, dgpu) = (0xA, 0xD);
+        let s = vec![(inst(100, igpu, "3D"), 40.0), (inst(100, igpu, "Copy"), 5.0)];
+        assert_eq!(pick_adapter_usage(&s, None, Some(dgpu)), Some((dgpu, 0)));
+        assert_eq!(pick_adapter_usage(&[], None, Some(dgpu)), Some((dgpu, 0)));
+    }
+    #[test]
+    fn array_fill_retries_more_data_with_the_updated_size() {
+        // An instance appears between the size query and the fill: the first fill is too small.
+        let mut buf = Vec::new();
+        let mut need = 48;
+        let n = fill_array(&mut buf, |size, count, items| {
+            if items.is_none() || *size < need {
+                *size = need;
+                need = 64;
+                return PDH_MORE_DATA;
+            }
+            *count = 2;
+            0
+        });
+        assert_eq!(n, Some(2));
+        assert!(buf.len() * size_of::<u64>() >= 64);
+        // Instances keep appearing: give up after a few attempts instead of looping forever.
+        let mut calls = 0;
+        let n = fill_array(&mut buf, |size, _, _| {
+            calls += 1;
+            *size = 1024 * calls;
+            PDH_MORE_DATA
+        });
+        assert_eq!(n, None);
+        assert_eq!(calls, 1 + FILL_ATTEMPTS);
     }
 }
