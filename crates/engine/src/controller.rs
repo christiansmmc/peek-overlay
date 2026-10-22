@@ -9,6 +9,7 @@
 //! - `FrameCapture::stop` (it joins the ETW threads), dropping an `ExitWatch` and UI events all
 //!   happen after `inner` is released.
 
+use crate::autostart;
 use crate::effects::{Effects, effective_metrics, plan_effects};
 use crate::frames::clock::now_ns;
 use crate::frames::etw::{CaptureError, FrameCapture, FrameShared};
@@ -113,6 +114,22 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Creates or removes the logon task. Failing (no elevation in debug builds) is not an error
+/// for the user. Skipped in tests, which must never touch the machine's scheduled tasks.
+fn apply_startup(on: bool) {
+    if cfg!(test) {
+        return;
+    }
+    let result = if on {
+        std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| autostart::enable(&exe))
+    } else {
+        autostart::disable()
+    };
+    if let Err(_e) = result {
+        crate::trace!("controller: startup task not updated: {_e}");
+    }
+}
+
 fn json<T: Serialize>(value: &T) -> serde_json::Value {
     serde_json::to_value(value).unwrap_or(serde_json::Value::Null)
 }
@@ -209,6 +226,10 @@ impl Controller {
         }
         // The first sync configures the overlay (creating its window) with the effective metrics.
         self.sync();
+        // Recreating the task refreshes the exe path and covers the first run. No lock is held.
+        if self.inner().settings.general.startup {
+            apply_startup(true);
+        }
     }
 
     /// Stops everything: the native thread (hotkey, timers, windows), the ETW session and the
@@ -256,15 +277,20 @@ impl Controller {
     /// Applies a partial settings object, saves it and emits `"settings"`. The shortcut is kept:
     /// it only changes through `try_set_hotkey`, which registers it first.
     pub fn update_settings(&self, patch: serde_json::Value) -> Result<Settings, String> {
-        let settings = {
+        let (settings, startup_changed) = {
             let mut g = self.inner();
             let mut next = settings::apply_patch(&g.settings, patch)?;
             next.shortcut = g.settings.shortcut.clone();
             settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
             g.detector.set_auto_show(next.general.auto_show);
+            let startup_changed = next.general.startup != g.settings.general.startup;
             g.settings = next.clone();
-            next
+            (next, startup_changed)
         };
+        // `schtasks` takes ~100 ms: run it with `inner` released.
+        if startup_changed {
+            apply_startup(settings.general.startup);
+        }
         self.sync();
         self.emit("settings", &settings);
         Ok(settings)
