@@ -5,6 +5,7 @@ use crate::settings::Settings;
 pub const REASON_NEEDS_ADMIN: &str = "Execute o app como administrador.";
 pub const REASON_NO_GPU_TEMP: &str = "Esta GPU não informa a temperatura.";
 pub const REASON_NO_GPU_COUNTERS: &str = "Contadores de GPU indisponíveis.";
+pub const REASON_NO_CPU_COUNTERS: &str = "Contadores de CPU indisponíveis.";
 pub const REASON_CPU_UNSUPPORTED: &str = "Este processador não é suportado.";
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

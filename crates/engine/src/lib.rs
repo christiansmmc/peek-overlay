@@ -2,6 +2,7 @@ pub mod frames;
 pub mod hotkey;
 pub mod model;
 pub mod native;
+pub mod sensors;
 pub mod settings;
 
 /// Version of the engine crate.
