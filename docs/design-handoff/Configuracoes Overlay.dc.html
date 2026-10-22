@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<style>
+html,body{margin:0;background:#050508;}
+*{-webkit-tap-highlight-color:transparent;}
+button{font-family:inherit;}
+a{color:oklch(0.78 0.12 290);}
+a:hover{color:#fff;}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</helmet>
+<div style="min-height:100vh;display:grid;place-items:center;background:#050508;">
+<div data-screen-label="Configurações" style="position:relative;width:480px;height:680px;overflow:hidden;border-radius:8px;background:#0a0a12;color:#fff;font-family:'Segoe UI Variable Text','Segoe UI Variable','Segoe UI',system-ui,sans-serif;font-size:13px;user-select:none;-webkit-font-smoothing:antialiased;">
+
+
+
+  <div style="position:relative;z-index:2;height:40px;display:flex;align-items:center;-webkit-app-region:drag;">
+    <div style="display:flex;align-items:center;gap:9px;padding-left:16px;flex:1;">
+      <span style="width:12px;height:12px;border-radius:4px;background:oklch(0.72 0.15 290);box-shadow:0 0 0 3px oklch(0.72 0.15 290 / .25);"></span>
+      <span style="font-size:12px;color:rgba(255,255,255,.82);">Overlay de desempenho</span>
+    </div>
+    <button onClick="{{ minimize }}" title="Minimizar" style="-webkit-app-region:no-drag;width:46px;height:40px;border:0;background:transparent;color:rgba(255,255,255,.8);display:grid;place-items:center;cursor:default;" style-hover="background:rgba(255,255,255,.08);">
+      <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 5.5h10" stroke="currentColor" stroke-width="1"></path></svg>
+    </button>
+    <button onClick="{{ closeWin }}" title="Fechar (continua na bandeja)" style="-webkit-app-region:no-drag;width:46px;height:40px;border:0;background:transparent;color:rgba(255,255,255,.8);display:grid;place-items:center;cursor:default;" style-hover="background:#c42b1c;color:#fff;">
+      <svg width="10" height="10" viewBox="0 0 10 10"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" stroke-width="1"></path></svg>
+    </button>
+  </div>
+
+  <div style="position:absolute;z-index:2;top:40px;left:12px;right:12px;bottom:12px;box-sizing:border-box;padding:14px 16px 16px;border-radius:16px;background:rgba(255,255,255,.055);backdrop-filter:blur(28px) saturate(140%);border:1px solid rgba(255,255,255,.1);box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 20px 50px rgba(0,0,0,.35);display:flex;flex-direction:column;gap:14px;">
+
+    <div style="display:flex;align-items:center;gap:10px;min-height:28px;">
+      <button onClick="{{ toggleActive }}" title="Mostrar/esconder o overlay" style="display:flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.07);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;" style-hover="background:rgba(255,255,255,.12);">
+        <span style="width:7px;height:7px;border-radius:50%;background:{{ statusDot }};box-shadow:0 0 0 3px {{ statusRing }};"></span>
+        <span>{{ statusText }}</span>
+      </button>
+      <sc-if value="{{ hasGame }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;flex-direction:column;line-height:1.2;min-width:0;">
+          <span style="font-size:10.5px;color:rgba(255,255,255,.55);">Jogo detectado</span>
+          <span style="font-size:12.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:190px;">{{ gameName }}</span>
+        </div>
+      </sc-if>
+      <sc-if value="{{ noGame }}">
+        <span style="font-size:12px;color:rgba(255,255,255,.55);">Nenhum jogo detectado</span>
+      </sc-if>
+      <span style="margin-left:auto;font-size:11px;color:rgba(255,255,255,.55);white-space:nowrap;">{{ shortcutStr }}</span>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:7px;">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55);">Prévia · clique para posicionar</span>
+        <span style="font-size:11.5px;color:rgba(255,255,255,.75);">{{ posName }}{{ fitNote }}</span>
+      </div>
+      <div ref="{{ pvRef }}" style="position:relative;height:158px;border-radius:10px;overflow:hidden;background:repeating-linear-gradient(135deg,rgba(255,255,255,.025) 0 10px,transparent 10px 20px),linear-gradient(180deg,#1b1e2c,#10121a);border:1px solid rgba(255,255,255,.08);">
+        <span style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);font:10px ui-monospace,Consolas,monospace;color:rgba(255,255,255,.28);letter-spacing:.08em;">cena do jogo · 1920×1080</span>
+        <sc-for list="{{ spots }}" as="s" hint-placeholder-count="8">
+          <button onClick="{{ s.onClick }}" title="{{ s.name }}" style="position:absolute;left:{{ s.x }};top:{{ s.y }};transform:translate(-50%,-50%);width:26px;height:26px;border:0;padding:0;background:transparent;display:grid;place-items:center;cursor:pointer;" style-hover="transform:translate(-50%,-50%) scale(1.35);">
+            <span style="width:8px;height:8px;border-radius:50%;background:{{ s.fill }};border:1px solid rgba(255,255,255,.45);"></span>
+          </button>
+        </sc-for>
+        <div ref="{{ ovRef }}" style="position:absolute;top:{{ ov.top }};left:{{ ov.left }};right:{{ ov.right }};bottom:{{ ov.bottom }};transform:{{ ov.transform }};transform-origin:{{ ov.origin }};opacity:{{ ov.vis }};pointer-events:none;font-family:'Segoe UI Variable Display','Segoe UI',system-ui,sans-serif;font-variant-numeric:tabular-nums;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.85);white-space:nowrap;transition:opacity .2s;">
+          <sc-if value="{{ isLine }}">
+            <div style="display:flex;align-items:center;gap:12px;height:26px;padding:0 12px;border-radius:13px;background:rgba(12,12,18,{{ ovAlpha }});font-size:12px;font-weight:600;">
+              <sc-if value="{{ show.fps }}"><span style="display:flex;align-items:baseline;gap:3px;"><span>{{ fps }}</span><span style="font-size:9.5px;color:rgba(255,255,255,.65);">FPS</span></span></sc-if>
+              <sc-if value="{{ show.graph }}"><svg width="44" height="14" viewBox="0 0 44 14" style="display:block;"><polyline points="{{ linePts }}" fill="none" stroke="oklch(0.78 0.13 250)" stroke-width="1.4" stroke-linejoin="round"></polyline></svg></sc-if>
+              <sc-if value="{{ show.gpu }}"><span style="display:flex;gap:5px;"><span style="color:oklch(0.78 0.13 290);">GPU</span><span>{{ gpuVal }}</span></span></sc-if>
+              <sc-if value="{{ show.cpu }}"><span style="display:flex;gap:5px;"><span style="color:oklch(0.78 0.13 250);">CPU</span><span>{{ cpuVal }}</span></span></sc-if>
+              <sc-if value="{{ show.none }}"><span style="font-weight:500;color:rgba(255,255,255,.65);">Nenhuma métrica</span></sc-if>
+            </div>
+          </sc-if>
+          <sc-if value="{{ isCard }}">
+            <div style="width:148px;box-sizing:border-box;padding:9px 11px 10px;border-radius:10px;background:rgba(12,12,18,{{ ovAlpha }});display:flex;flex-direction:column;gap:6px;">
+              <sc-if value="{{ show.fps }}">
+                <div style="display:flex;align-items:baseline;gap:4px;">
+                  <span style="font-size:26px;font-weight:700;line-height:1;letter-spacing:-.02em;">{{ fps }}</span>
+                  <span style="font-size:10px;font-weight:600;color:rgba(255,255,255,.65);">FPS</span>
+                  <span style="margin-left:auto;font-size:10.5px;color:rgba(255,255,255,.65);">{{ ftNow }} ms</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ show.graph }}"><svg width="126" height="26" viewBox="0 0 126 26" style="display:block;"><polyline points="{{ cardPts }}" fill="none" stroke="oklch(0.78 0.13 250)" stroke-width="1.5" stroke-linejoin="round"></polyline></svg></sc-if>
+              <sc-if value="{{ show.gpu }}">
+                <div style="display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:6px;font-size:10.5px;font-weight:600;">
+                  <span style="color:oklch(0.78 0.13 290);">GPU</span>
+                  <span style="height:5px;border-radius:3px;background:rgba(255,255,255,.14);overflow:hidden;visibility:{{ gpuBarVis }};"><span style="display:block;height:100%;width:{{ gpuPct }};background:oklch(0.72 0.15 290);"></span></span>
+                  <span>{{ gpuVal }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ show.cpu }}">
+                <div style="display:grid;grid-template-columns:26px 1fr auto;align-items:center;gap:6px;font-size:10.5px;font-weight:600;">
+                  <span style="color:oklch(0.78 0.13 250);">CPU</span>
+                  <span style="height:5px;border-radius:3px;background:rgba(255,255,255,.14);overflow:hidden;visibility:{{ cpuBarVis }};"><span style="display:block;height:100%;width:{{ cpuPct }};background:oklch(0.72 0.15 250);"></span></span>
+                  <span>{{ cpuVal }}</span>
+                </div>
+              </sc-if>
+              <sc-if value="{{ show.none }}"><span style="font-size:11px;font-weight:500;color:rgba(255,255,255,.65);">Nenhuma métrica ativa</span></sc-if>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:8px;">
+      <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55);">Métricas</span>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        <sc-for list="{{ pills }}" as="p" hint-placeholder-count="6">
+          <button onClick="{{ p.onClick }}" title="{{ p.title }}" style="display:flex;align-items:center;gap:7px;height:32px;padding:0 12px 0 9px;border-radius:16px;border:1px {{ p.bstyle }} {{ p.border }};background:{{ p.bg }};color:{{ p.color }};font-size:12.5px;font-weight:500;cursor:{{ p.cursor }};transition:background .15s,border-color .15s;" style-hover="filter:brightness(1.18);">
+            <span style="width:14px;height:14px;box-sizing:border-box;border-radius:50%;border:1.5px solid {{ p.dotBorder }};background:{{ p.dotBg }};display:grid;place-items:center;">
+              <sc-if value="{{ p.on }}"><svg width="8" height="8" viewBox="0 0 8 8"><path d="M1.5 4.2L3.2 5.8L6.5 2.3" fill="none" stroke="#0b0b12" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"></path></svg></sc-if>
+            </span>
+            <span>{{ p.label }}</span>
+            <sc-if value="{{ p.sub }}"><span style="font-size:11px;font-weight:600;color:{{ p.subColor }};">{{ p.sub }}</span></sc-if>
+          </button>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:124px minmax(0,1fr) minmax(0,1fr);gap:18px;align-items:end;">
+      <div style="display:flex;flex-direction:column;gap:7px;">
+        <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55);">Estilo</span>
+        <div style="display:flex;padding:3px;border-radius:10px;background:rgba(0,0,0,.28);border:1px solid rgba(255,255,255,.07);">
+          <sc-for list="{{ styleOpts }}" as="o" hint-placeholder-count="2">
+            <button onClick="{{ o.onClick }}" style="flex:1;height:28px;border:0;border-radius:7px;background:{{ o.bg }};color:{{ o.color }};box-shadow:{{ o.shadow }};font-size:12.5px;font-weight:600;cursor:pointer;transition:background .15s;">{{ o.label }}</button>
+          </sc-for>
+        </div>
+      </div>
+      <sc-for list="{{ sliders }}" as="sl" hint-placeholder-count="2">
+        <div style="display:flex;flex-direction:column;gap:3px;">
+          <div style="display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55);">{{ sl.label }}</span>
+            <span style="font-size:12px;font-weight:600;font-variant-numeric:tabular-nums;">{{ sl.valueText }}</span>
+          </div>
+          <div tabindex="0" role="slider" aria-label="{{ sl.label }}" aria-valuenow="{{ sl.value }}" onPointerDown="{{ sl.down }}" onPointerMove="{{ sl.move }}" onPointerUp="{{ sl.up }}" onKeyDown="{{ sl.key }}" style="position:relative;height:32px;cursor:pointer;touch-action:none;outline:none;" style-focus="outline:none;">
+            <div style="position:absolute;left:0;right:0;top:14px;height:4px;border-radius:2px;background:rgba(255,255,255,.14);"></div>
+            <div style="position:absolute;left:0;top:14px;height:4px;border-radius:2px;width:{{ sl.pct }};background:oklch(0.72 0.15 290);"></div>
+            <div style="position:absolute;top:8px;left:{{ sl.pct }};width:16px;height:16px;margin-left:-8px;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.45);"></div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div style="display:flex;flex-direction:column;gap:3px;min-width:0;">
+        <span style="font-size:13px;font-weight:500;">Atalho mostrar/esconder</span>
+        <span style="font-size:11.5px;color:{{ scHintColor }};text-wrap:pretty;">{{ scHint }}</span>
+      </div>
+      <button onClick="{{ startCapture }}" onBlur="{{ cancelCapture }}" style="flex:none;min-width:156px;height:36px;padding:0 10px;border-radius:9px;border:1px solid {{ scBorder }};background:rgba(0,0,0,.28);box-shadow:{{ scShadow }};color:#fff;display:flex;align-items:center;justify-content:center;gap:4px;cursor:pointer;outline:none;" style-hover="background:rgba(0,0,0,.38);">
+        <sc-for list="{{ scKeys }}" as="k" hint-placeholder-count="3">
+          <span style="padding:3px 7px;border-radius:5px;background:rgba(255,255,255,.11);border:1px solid rgba(255,255,255,.1);border-bottom-color:rgba(0,0,0,.4);font-size:11.5px;font-weight:600;">{{ k }}</span>
+        </sc-for>
+        <sc-if value="{{ scPlaceholder }}"><span style="font-size:12px;color:oklch(0.82 0.1 290);">{{ scPlaceholder }}</span></sc-if>
+      </button>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:4px;">
+      <span style="font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.55);margin-bottom:2px;">Geral</span>
+      <sc-for list="{{ toggles }}" as="t" hint-placeholder-count="3">
+        <div onClick="{{ t.onClick }}" role="switch" aria-checked="{{ t.on }}" style="display:flex;align-items:center;justify-content:space-between;height:30px;cursor:pointer;">
+          <span style="font-size:13px;">{{ t.label }}</span>
+          <span style="position:relative;width:36px;height:20px;box-sizing:border-box;border-radius:10px;border:1px solid {{ t.border }};background:{{ t.bg }};transition:background .15s;">
+            <span style="position:absolute;top:2px;left:{{ t.knob }};width:14px;height:14px;border-radius:50%;background:{{ t.knobBg }};transition:left .15s;"></span>
+          </span>
+        </div>
+      </sc-for>
+    </div>
+
+    <sc-if value="{{ toast }}">
+      <div style="position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:9px 14px;border-radius:10px;background:rgba(24,24,36,.95);border:1px solid rgba(255,255,255,.12);box-shadow:0 10px 30px rgba(0,0,0,.4);font-size:12.5px;white-space:nowrap;">{{ toast }}</div>
+    </sc-if>
+  </div>
+
+  <sc-if value="{{ sheetOpen }}">
+    <div onClick="{{ dismissSheet }}" style="position:absolute;z-index:5;top:40px;left:0;right:0;bottom:0;background:rgba(6,6,12,.55);display:flex;align-items:flex-end;padding:12px;box-sizing:border-box;">
+      <div onClick="{{ stop }}" style="width:100%;box-sizing:border-box;padding:18px 18px 16px;border-radius:16px;background:rgba(30,28,46,.9);backdrop-filter:blur(30px);border:1px solid rgba(255,255,255,.12);box-shadow:0 20px 60px rgba(0,0,0,.5);display:flex;flex-direction:column;gap:10px;">
+        <sc-if value="{{ sheetPrompt }}">
+          <span style="font-size:15px;font-weight:600;">Temperatura da CPU precisa de um driver</span>
+          <span style="font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.75);text-wrap:pretty;">Para ler o sensor da CPU, o app usa o PawnIO — um driver gratuito e assinado digitalmente. A instalação leva poucos segundos e o Windows vai pedir permissão de administrador.</span>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+            <button onClick="{{ dismissSheet }}" style="height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;" style-hover="background:rgba(255,255,255,.12);">Agora não</button>
+            <button onClick="{{ install }}" style="height:34px;padding:0 16px;border-radius:8px;border:0;background:oklch(0.72 0.15 290);color:#0b0b12;font-size:12.5px;font-weight:700;cursor:pointer;" style-hover="background:oklch(0.78 0.13 290);">Instalar</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ sheetInstalling }}">
+          <div style="display:flex;align-items:center;gap:10px;">
+            {{ spinner }}
+            <span style="font-size:15px;font-weight:600;">Instalando PawnIO…</span>
+          </div>
+          <span style="font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.75);">Se o Windows pedir permissão, clique em “Sim”. Não feche esta janela.</span>
+          <div style="height:4px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden;margin-top:4px;"><div style="height:100%;width:{{ installPct }};background:oklch(0.72 0.15 290);transition:width .3s linear;"></div></div>
+        </sc-if>
+        <sc-if value="{{ sheetFailed }}">
+          <span style="font-size:15px;font-weight:600;color:oklch(0.8 0.12 25);">Não foi possível instalar o driver</span>
+          <span style="font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.75);text-wrap:pretty;">A permissão de administrador foi negada ou a instalação foi bloqueada pelo antivírus. As outras métricas continuam funcionando.</span>
+          <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+            <button onClick="{{ dismissSheet }}" style="height:34px;padding:0 14px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;" style-hover="background:rgba(255,255,255,.12);">Agora não</button>
+            <button onClick="{{ install }}" style="height:34px;padding:0 16px;border-radius:8px;border:0;background:oklch(0.72 0.15 290);color:#0b0b12;font-size:12.5px;font-weight:700;cursor:pointer;" style-hover="background:oklch(0.78 0.13 290);">Tentar de novo</button>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ winHidden }}">
+    <div style="position:absolute;z-index:10;inset:0;background:#050508;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:40px;text-align:center;">
+      <span style="font-size:14px;font-weight:600;">{{ hiddenTitle }}</span>
+      <span style="font-size:12.5px;line-height:1.5;color:rgba(255,255,255,.6);max-width:300px;">O app continua rodando na bandeja e o overlay segue funcionando. (Simulação — na janela real ela some.)</span>
+      <button onClick="{{ reopen }}" style="height:34px;padding:0 16px;border-radius:8px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.06);color:#fff;font-size:12.5px;font-weight:600;cursor:pointer;" style-hover="background:rgba(255,255,255,.12);">Clicar no ícone da bandeja</button>
+    </div>
+  </sc-if>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:480,&quot;height&quot;:680},&quot;gpuIntegrada&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simular hardware&quot;},&quot;driverInstalado&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:false,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Simular hardware&quot;},&quot;resultadoInstalacao&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;Falha na 1ª tentativa&quot;,&quot;Sucesso&quot;,&quot;Sempre falha&quot;],&quot;default&quot;:&quot;Falha na 1ª tentativa&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Simular hardware&quot;},&quot;jogo&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Cyberpunk 2077&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Simular hardware&quot;}}">
+const P = 'oklch(0.72 0.15 290)';
+const WARN = 'oklch(0.8 0.12 75)';
+const ERR = 'oklch(0.8 0.12 25)';
+const POS = {
+  tl: { name: 'Canto superior esquerdo', top: '8px', left: '8px', o: 'top left', x: '14px', y: '14px' },
+  tc: { name: 'Centro superior', top: '8px', left: '50%', tx: 'translateX(-50%) ', o: 'top center', x: '50%', y: '14px' },
+  tr: { name: 'Canto superior direito', top: '8px', right: '8px', o: 'top right', x: 'calc(100% - 14px)', y: '14px' },
+  ml: { name: 'Centro esquerdo', top: '50%', left: '8px', tx: 'translateY(-50%) ', o: 'left center', x: '14px', y: '50%' },
+  mr: { name: 'Centro direito', top: '50%', right: '8px', tx: 'translateY(-50%) ', o: 'right center', x: 'calc(100% - 14px)', y: '50%' },
+  bl: { name: 'Canto inferior esquerdo', bottom: '8px', left: '8px', o: 'bottom left', x: '14px', y: 'calc(100% - 14px)' },
+  bc: { name: 'Centro inferior', bottom: '8px', left: '50%', tx: 'translateX(-50%) ', o: 'bottom center', x: '50%', y: 'calc(100% - 14px)' },
+  br: { name: 'Canto inferior direito', bottom: '8px', right: '8px', o: 'bottom right', x: 'calc(100% - 14px)', y: 'calc(100% - 14px)' },
+};
+const CONFLICTS = {
+  'Ctrl+Shift+M': 'Discord', 'Alt+Z': 'NVIDIA App', 'Alt+R': 'AMD Software',
+  'Win+G': 'Xbox Game Bar', 'Ctrl+Shift+Esc': 'Windows', 'Ctrl+Shift+S': 'Steam', 'Shift+Tab': 'Steam',
+};
+const KEYMAP = { Space: 'Espaço', Insert: 'Insert', Home: 'Home', End: 'End', PageUp: 'PgUp', PageDown: 'PgDn', Delete: 'Del', ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Escape: 'Esc', Tab: 'Tab', Enter: 'Enter', Backspace: 'Backspace', Backquote: '`', Minus: '-', Equal: '=' };
+
+class Component extends DCLogic {
+  state = {
+    m: { fps: true, graph: true, gpuUse: true, gpuTemp: true, cpuUse: true, cpuTemp: false },
+    style: 'card', pos: 'tr', size: 100, opacity: 80,
+    shortcut: ['Ctrl', 'Shift', 'O'], capturing: false, partial: [], scError: null,
+    gen: { startup: true, minimized: true, autoShow: true },
+    active: true, driver: null, sheet: false, installPct: 0,
+    fps: 142, ft: Array.from({ length: 48 }, () => 6.6 + Math.random() * 0.8),
+    gpuUse: 96, gpuTemp: 71, cpuUse: 38, cpuTemp: 64,
+    fit: 1, hidden: null, toast: null,
+  };
+  attempts = 0;
+  ovRef = el => { this.ovEl = el; };
+  pvRef = el => { this.pvEl = el; };
+
+  componentDidMount() {
+    this.timer = setInterval(() => this.tick(), 500);
+    window.addEventListener('keydown', this.onKeyDown, true);
+    window.addEventListener('keyup', this.onKeyUp, true);
+    this.measure();
+  }
+  componentWillUnmount() {
+    clearInterval(this.timer);
+    window.removeEventListener('keydown', this.onKeyDown, true);
+    window.removeEventListener('keyup', this.onKeyUp, true);
+  }
+  componentDidUpdate() { this.measure(); }
+
+  measure() {
+    const el = this.ovEl, pv = this.pvEl;
+    if (!el || !pv || !el.offsetWidth) return;
+    const s = this.state.size / 100;
+    const fit = Math.min(1, (pv.clientWidth - 16) / (el.offsetWidth * s), (pv.clientHeight - 16) / (el.offsetHeight * s));
+    if (Math.abs(fit - this.state.fit) > 0.004) this.setState({ fit });
+  }
+
+  tick() {
+    this.setState(s => {
+      const spike = Math.random() < 0.05;
+      const fps = Math.round(spike ? 96 + Math.random() * 20 : 138 + Math.random() * 9);
+      const ms = 1000 / fps + (Math.random() - 0.5) * 0.4;
+      const j = (v, d, lo, hi) => Math.max(lo, Math.min(hi, Math.round(v + (Math.random() - 0.5) * d)));
+      return {
+        fps, ft: [...s.ft.slice(1), ms],
+        gpuUse: j(s.gpuUse, 4, 88, 99), gpuTemp: j(s.gpuTemp, 2, 68, 75),
+        cpuUse: j(s.cpuUse, 6, 28, 52), cpuTemp: j(s.cpuTemp, 2, 60, 69),
+      };
+    });
+  }
+
+  driver() { return this.state.driver ?? (this.props.driverInstalado ? 'installed' : 'missing'); }
+
+  flash(t) { clearTimeout(this.tt); this.setState({ toast: t }); this.tt = setTimeout(() => this.setState({ toast: null }), 2600); }
+
+  keyName(e) {
+    const c = e.code;
+    if (/^Key[A-Z]$/.test(c)) return c.slice(3);
+    if (/^Digit\d$/.test(c)) return c.slice(5);
+    if (/^F\d{1,2}$/.test(c)) return c;
+    if (/^Numpad/.test(c)) return 'Num ' + c.slice(6);
+    if (KEYMAP[c]) return KEYMAP[c];
+    return e.key.length === 1 ? e.key.toUpperCase() : e.key;
+  }
+  mods(e) { const m = []; if (e.ctrlKey) m.push('Ctrl'); if (e.altKey) m.push('Alt'); if (e.shiftKey) m.push('Shift'); if (e.metaKey) m.push('Win'); return m; }
+
+  onKeyDown = e => {
+    const isMod = ['Control', 'Shift', 'Alt', 'Meta'].includes(e.key);
+    const mods = this.mods(e);
+    if (this.state.capturing) {
+      e.preventDefault(); e.stopPropagation();
+      if (isMod) return this.setState({ partial: mods });
+      const key = this.keyName(e);
+      if (key === 'Esc' && !mods.length) return this.setState({ capturing: false, partial: [], scError: null });
+      if (!mods.length) return this.setState({ partial: [], scError: 'Use pelo menos Ctrl, Alt ou Shift junto com a tecla.' });
+      const combo = [...mods, key], str = combo.join('+');
+      if (CONFLICTS[str]) return this.setState({ capturing: false, partial: [], scError: `${combo.join(' + ')} já é usado por ${CONFLICTS[str]}. Escolha outra.` });
+      this.setState({ shortcut: combo, capturing: false, partial: [], scError: null });
+      return this.flash(`Atalho alterado para ${combo.join(' + ')}`);
+    }
+    if (!isMod && [...mods, this.keyName(e)].join('+') === this.state.shortcut.join('+')) {
+      e.preventDefault();
+      this.setState(s => ({ active: !s.active }));
+    }
+  };
+  onKeyUp = e => { if (this.state.capturing) this.setState({ partial: this.mods(e) }); };
+
+  install = () => {
+    this.attempts++;
+    this.setState({ driver: 'installing', installPct: 0 });
+    let p = 0;
+    const iv = setInterval(() => { p = Math.min(92, p + 8 + Math.random() * 10); this.setState({ installPct: p }); }, 250);
+    setTimeout(() => {
+      clearInterval(iv);
+      const mode = this.props.resultadoInstalacao ?? 'Falha na 1ª tentativa';
+      const ok = mode === 'Sucesso' || (mode === 'Falha na 1ª tentativa' && this.attempts > 1);
+      if (ok) {
+        this.setState(s => ({ driver: 'installed', sheet: false, installPct: 100, m: { ...s.m, cpuTemp: true } }));
+        this.flash('Driver instalado. Temperatura da CPU ativada.');
+      } else this.setState({ driver: 'failed' });
+    }, 2600);
+  };
+
+  pillClick(k, kind) {
+    if (kind === 'disabled') return;
+    if (kind === 'driver') return this.setState({ sheet: true });
+    this.setState(s => ({ m: { ...s.m, [k]: !s.m[k] } }));
+  }
+
+  slider(key, label, min, max, step) {
+    const v = this.state[key];
+    const setFrom = e => {
+      const r = e.currentTarget.getBoundingClientRect();
+      const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+      this.setState({ [key]: Math.round((min + t * (max - min)) / step) * step });
+    };
+    return {
+      label, value: v, valueText: v + '%', pct: ((v - min) / (max - min)) * 100 + '%',
+      down: e => { e.currentTarget.setPointerCapture(e.pointerId); this.drag = key; setFrom(e); },
+      move: e => { if (this.drag === key) setFrom(e); },
+      up: () => { this.drag = null; },
+      key: e => {
+        const d = { ArrowRight: step, ArrowUp: step, ArrowLeft: -step, ArrowDown: -step }[e.key];
+        if (d) { e.preventDefault(); this.setState({ [key]: Math.max(min, Math.min(max, v + d)) }); }
+      },
+    };
+  }
+
+  pts(w, h) {
+    const a = this.state.ft, n = a.length;
+    return a.map((ms, i) => `${(i * w / (n - 1)).toFixed(1)},${(h - 1 - Math.min(1, ms / 14) * (h - 2)).toFixed(1)}`).join(' ');
+  }
+
+  renderVals() {
+    const s = this.state, m = s.m;
+    const igpu = !!this.props.gpuIntegrada;
+    const drv = this.driver();
+    const game = (this.props.jogo ?? 'Cyberpunk 2077').trim();
+
+    const sh = {
+      fps: m.fps, graph: m.graph, gpuUse: m.gpuUse, gpuTemp: m.gpuTemp && !igpu,
+      cpuUse: m.cpuUse, cpuTemp: m.cpuTemp && drv === 'installed',
+    };
+    sh.gpu = sh.gpuUse || sh.gpuTemp; sh.cpu = sh.cpuUse || sh.cpuTemp;
+    sh.none = !sh.fps && !sh.graph && !sh.gpu && !sh.cpu;
+    const join = (u, t) => [u, t].filter(Boolean).join(s.style === 'card' ? ' · ' : ' ');
+
+    const p = POS[s.pos];
+    const sc = (s.size / 100) * s.fit;
+
+    const defs = [['fps', 'FPS'], ['graph', 'Gráfico de frametime'], ['gpuUse', 'GPU uso'], ['gpuTemp', 'GPU temp.'], ['cpuUse', 'CPU uso'], ['cpuTemp', 'CPU temp.']];
+    const pills = defs.map(([k, label]) => {
+      let kind = 'normal', sub = '', title = '';
+      if (k === 'gpuTemp' && igpu) { kind = 'disabled'; sub = 'sem sensor'; title = 'GPUs integradas não informam a temperatura.'; }
+      if (k === 'cpuTemp' && drv !== 'installed') { kind = 'driver'; sub = drv === 'failed' ? 'instalação falhou' : 'requer driver'; title = 'Precisa do driver PawnIO (gratuito)'; }
+      const on = kind === 'normal' && m[k];
+      return {
+        label, sub, title, on,
+        bg: on ? 'oklch(0.72 0.15 290 / .2)' : kind === 'disabled' ? 'transparent' : 'rgba(255,255,255,.04)',
+        border: on ? 'oklch(0.72 0.15 290 / .6)' : 'rgba(255,255,255,.14)',
+        bstyle: kind === 'disabled' ? 'dashed' : 'solid',
+        color: on ? '#fff' : kind === 'disabled' ? 'rgba(255,255,255,.5)' : 'rgba(255,255,255,.8)',
+        dotBorder: on ? 'transparent' : kind === 'disabled' ? 'rgba(255,255,255,.2)' : 'rgba(255,255,255,.4)',
+        dotBg: on ? P : 'transparent',
+        subColor: kind === 'driver' ? (drv === 'failed' ? ERR : WARN) : 'rgba(255,255,255,.5)',
+        cursor: kind === 'disabled' ? 'not-allowed' : 'pointer',
+        onClick: () => this.pillClick(k, kind),
+      };
+    });
+
+    const g = s.gen;
+    const tg = (k, label) => ({
+      label, on: g[k],
+      bg: g[k] ? P : 'rgba(255,255,255,.08)', border: g[k] ? 'transparent' : 'rgba(255,255,255,.25)',
+      knob: g[k] ? '18px' : '2px', knobBg: g[k] ? '#0b0b12' : 'rgba(255,255,255,.75)',
+      onClick: () => this.setState(st => ({ gen: { ...st.gen, [k]: !st.gen[k] } })),
+    });
+
+    const scKeys = s.capturing ? s.partial : s.shortcut;
+    const sheetState = drv === 'installing' ? 'installing' : drv === 'failed' ? 'failed' : 'prompt';
+
+    return {
+      statusText: s.active ? 'Overlay ativo' : 'Overlay oculto',
+      statusDot: s.active ? 'oklch(0.78 0.15 150)' : 'rgba(255,255,255,.4)',
+      statusRing: s.active ? 'oklch(0.78 0.15 150 / .22)' : 'rgba(255,255,255,.08)',
+      toggleActive: () => this.setState(st => ({ active: !st.active })),
+      hasGame: !!game, noGame: !game, gameName: game,
+      shortcutStr: s.shortcut.join(' + '),
+
+      posName: p.name,
+      fitNote: s.fit < 0.995 ? ' · prévia reduzida' : '',
+      pvRef: this.pvRef, ovRef: this.ovRef,
+      spots: Object.entries(POS).map(([k, v]) => ({
+        name: v.name, x: v.x, y: v.y, fill: k === s.pos ? P : 'rgba(255,255,255,.12)',
+        onClick: () => this.setState({ pos: k }),
+      })),
+      ov: {
+        top: p.top || 'auto', left: p.left || 'auto', right: p.right || 'auto', bottom: p.bottom || 'auto',
+        transform: `${p.tx || ''}scale(${sc.toFixed(3)})`, origin: p.o, vis: s.active ? 1 : 0.3,
+      },
+      ovAlpha: (s.opacity / 100).toFixed(2),
+      isLine: s.style === 'line', isCard: s.style === 'card',
+      show: sh,
+      fps: s.fps, ftNow: s.ft[s.ft.length - 1].toFixed(1).replace('.', ','),
+      linePts: this.pts(44, 14), cardPts: this.pts(126, 26),
+      gpuVal: join(sh.gpuUse && s.gpuUse + '%', sh.gpuTemp && s.gpuTemp + '°'),
+      cpuVal: join(sh.cpuUse && s.cpuUse + '%', sh.cpuTemp && s.cpuTemp + '°'),
+      gpuPct: s.gpuUse + '%', cpuPct: s.cpuUse + '%',
+      gpuBarVis: sh.gpuUse ? 'visible' : 'hidden', cpuBarVis: sh.cpuUse ? 'visible' : 'hidden',
+
+      pills,
+      styleOpts: [['line', 'Linha'], ['card', 'Card']].map(([k, label]) => ({
+        label, onClick: () => this.setState({ style: k }),
+        bg: s.style === k ? 'rgba(255,255,255,.15)' : 'transparent',
+        color: s.style === k ? '#fff' : 'rgba(255,255,255,.65)',
+        shadow: s.style === k ? '0 1px 2px rgba(0,0,0,.3)' : 'none',
+      })),
+      sliders: [this.slider('size', 'Tamanho', 75, 200, 5), this.slider('opacity', 'Opacidade', 30, 100, 5)],
+
+      scKeys,
+      scPlaceholder: s.capturing ? (s.partial.length ? '+ …' : 'Pressione as teclas…') : '',
+      scBorder: s.capturing ? P : s.scError ? 'oklch(0.72 0.15 25 / .7)' : 'rgba(255,255,255,.12)',
+      scShadow: s.capturing ? '0 0 0 3px oklch(0.72 0.15 290 / .25)' : 'none',
+      scHint: s.capturing ? 'Esc cancela' : s.scError || 'Clique no campo e pressione a nova combinação',
+      scHintColor: s.scError && !s.capturing ? ERR : 'rgba(255,255,255,.55)',
+      startCapture: () => this.setState({ capturing: true, partial: [], scError: null }),
+      cancelCapture: () => { if (this.state.capturing) this.setState({ capturing: false, partial: [] }); },
+
+      toggles: [tg('startup', 'Iniciar com o Windows'), tg('minimized', 'Abrir minimizado na bandeja'), tg('autoShow', 'Mostrar overlay sozinho ao abrir um jogo')],
+      toast: s.toast,
+
+      sheetOpen: s.sheet,
+      sheetPrompt: sheetState === 'prompt', sheetInstalling: sheetState === 'installing', sheetFailed: sheetState === 'failed',
+      installPct: s.installPct + '%',
+      install: this.install,
+      dismissSheet: () => { if (this.driver() !== 'installing') this.setState({ sheet: false }); },
+      stop: e => e.stopPropagation(),
+      spinner: React.createElement('span', { style: { width: 16, height: 16, boxSizing: 'border-box', border: '2px solid rgba(255,255,255,.2)', borderTopColor: '#fff', borderRadius: '50%', display: 'inline-block', animation: 'spin .8s linear infinite' } }),
+
+      winHidden: !!s.hidden,
+      hiddenTitle: s.hidden === 'min' ? 'Janela minimizada' : 'Janela escondida na bandeja',
+      minimize: () => this.setState({ hidden: 'min' }),
+      closeWin: () => this.setState({ hidden: 'close' }),
+      reopen: () => this.setState({ hidden: null }),
+    };
+  }
+}
+</script>
+</body>
+</html>
