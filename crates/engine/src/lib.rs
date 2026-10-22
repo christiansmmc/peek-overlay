@@ -1,8 +1,11 @@
+pub mod effects;
 pub mod frames;
+pub mod game;
 pub mod hotkey;
 pub mod model;
 pub mod native;
 pub mod pawnio;
+pub mod process_info;
 pub mod sensors;
 pub mod settings;
 
