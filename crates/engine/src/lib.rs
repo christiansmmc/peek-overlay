@@ -1,3 +1,5 @@
+pub mod hotkey;
+
 /// Version of the engine crate.
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
