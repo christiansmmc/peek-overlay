@@ -1,7 +1,7 @@
 # Overlay de desempenho: design
 
 **Data:** 2026-10-22
-**Status:** aguardando aprovação
+**Status:** aprovado (2026-10-22)
 
 ## 1. Intenção
 
