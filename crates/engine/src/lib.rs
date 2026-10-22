@@ -1,3 +1,4 @@
+pub mod frames;
 pub mod hotkey;
 pub mod model;
 pub mod native;
