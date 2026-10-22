@@ -88,13 +88,14 @@ impl FrameTracker {
         let mut cols: Vec<Option<f32>> = vec![None; columns];
         let mut prev: Option<u64> = None;
         for &t in &self.presents {
-            if let Some(p) = prev {
-                if t >= start && t <= now_ns {
-                    let idx = (((t - start) as u128 * columns as u128) / HISTORY_NS as u128)
-                        .min(columns as u128 - 1) as usize;
-                    let ft = (t.saturating_sub(p) as f64 / 1e6) as f32;
-                    cols[idx] = Some(cols[idx].map_or(ft, |c| c.max(ft)));
-                }
+            if let Some(p) = prev
+                && t >= start
+                && t <= now_ns
+            {
+                let idx = (((t - start) as u128 * columns as u128) / HISTORY_NS as u128)
+                    .min(columns as u128 - 1) as usize;
+                let ft = (t.saturating_sub(p) as f64 / 1e6) as f32;
+                cols[idx] = Some(cols[idx].map_or(ft, |c| c.max(ft)));
             }
             prev = Some(t);
         }
