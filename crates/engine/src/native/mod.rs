@@ -1,7 +1,9 @@
-//! Dedicated native thread: a message-only window that owns the global hotkey and the timers.
+//! Dedicated native thread: a message-only window that owns the global hotkey and the timers,
+//! plus the overlay window (created on the first `NativeCmd::Overlay`).
 //! Later tasks extend `NativeCmd`/`NativeEvent` and the single dispatch in `handle_cmd`.
 
 use crate::hotkey::{Hotkey, HotkeyError};
+use crate::overlay::window::{OverlayCmd, OverlayWindow, WM_OVERLAY_DISPLAY_CHANGED};
 use std::cell::RefCell;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
@@ -13,8 +15,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE,
     KillTimer, MSG, PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage,
-    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_DISPLAYCHANGE, WM_HOTKEY, WM_TIMER,
-    WNDCLASSW,
+    WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER, WNDCLASSW,
 };
 use windows::core::w;
 
@@ -72,6 +73,7 @@ impl Timers {
 pub enum NativeEvent {
     Hotkey,
     Timer(TimerKind),
+    /// Display resolution, layout or DPI changed (seen by the overlay window).
     DisplayChanged,
 }
 
@@ -79,6 +81,7 @@ pub enum NativeCmd {
     RegisterHotkey(Hotkey, Sender<Result<(), HotkeyError>>),
     UnregisterHotkey,
     SetTimers(Timers),
+    Overlay(OverlayCmd),
     Quit,
 }
 
@@ -88,6 +91,7 @@ struct ThreadState {
     rx: Receiver<NativeCmd>,
     timers: Timers,
     hotkey_registered: bool,
+    overlay: Option<OverlayWindow>,
 }
 
 thread_local! {
@@ -150,6 +154,7 @@ fn run_thread(
             rx,
             timers: Timers::default(),
             hotkey_registered: false,
+            overlay: None,
         });
     });
     let _ = ready_tx.send(hwnd.0 as isize);
@@ -161,7 +166,9 @@ fn run_thread(
             DispatchMessageW(&msg);
         }
     }
-    STATE.with(|s| *s.borrow_mut() = None);
+    // Drop the state (and the overlay window) with the borrow already released.
+    let state = STATE.with(|s| s.borrow_mut().take());
+    drop(state);
 }
 
 fn create_window() -> Option<HWND> {
@@ -218,9 +225,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
-        WM_DISPLAYCHANGE => {
+        // Forwarded by the overlay window: a message-only window never gets WM_DISPLAYCHANGE.
+        WM_OVERLAY_DISPLAY_CHANGED => {
+            with_overlay(hwnd, false, OverlayWindow::on_display_changed);
             emit(NativeEvent::DisplayChanged);
-            unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+            LRESULT(0)
         }
         WM_DESTROY => {
             unsafe { PostQuitMessage(0) };
@@ -250,11 +259,38 @@ fn handle_cmd(hwnd: HWND, cmd: NativeCmd) {
         }
         NativeCmd::UnregisterHotkey => unregister_hotkey(hwnd),
         NativeCmd::SetTimers(wanted) => set_timers(hwnd, wanted),
+        NativeCmd::Overlay(cmd) => with_overlay(hwnd, true, |o| o.handle(cmd)),
         NativeCmd::Quit => unsafe {
             // WM_DESTROY ends the loop; timers and hotkey die with the window.
             let _ = DestroyWindow(hwnd);
         },
     }
+}
+
+/// Runs `f` on the overlay window, creating it first when `create` is set. The window is
+/// taken out of the state while `f` runs, so messages it triggers never meet a borrowed state.
+fn with_overlay(hwnd: HWND, create: bool, f: impl FnOnce(&mut OverlayWindow)) {
+    let taken = STATE.with(|s| s.borrow_mut().as_mut().and_then(|st| st.overlay.take()));
+    let mut overlay = match taken {
+        Some(o) => o,
+        None if create => match OverlayWindow::create() {
+            Ok(o) => {
+                o.set_display_listener(hwnd.0 as isize);
+                o
+            }
+            Err(_e) => {
+                crate::trace!("overlay: window creation failed: {_e}");
+                return;
+            }
+        },
+        None => return,
+    };
+    f(&mut overlay);
+    STATE.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.overlay = Some(overlay);
+        }
+    });
 }
 
 fn register_hotkey(hwnd: HWND, hk: Hotkey) -> Result<(), HotkeyError> {
@@ -339,5 +375,56 @@ mod tests {
         while rx.try_recv().is_ok() {}
         assert!(rx.recv_timeout(Duration::from_millis(700)).is_err());
         h.quit();
+    }
+
+    /// The overlay window created by `h` (its display listener is `h`'s window).
+    fn overlay_of(h: &NativeHandle) -> Option<HWND> {
+        use windows::Win32::UI::WindowsAndMessaging::{FindWindowExW, GWLP_USERDATA, GetWindowLongPtrW};
+        let mut after = None;
+        loop {
+            let found = unsafe { FindWindowExW(None, after, w!("OverlayEngineOverlayWindow"), None) }.ok()?;
+            if unsafe { GetWindowLongPtrW(found, GWLP_USERDATA) } == h.hwnd {
+                return Some(found);
+            }
+            after = Some(found);
+        }
+    }
+
+    #[test]
+    fn overlay_window_display_and_dpi_changes_emit_events() {
+        use crate::overlay::window::OverlayConfig;
+        use crate::settings::{Metrics, Pos, Style};
+        use std::{sync::mpsc, time::Duration};
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_DISPLAYCHANGE, WM_DPICHANGED};
+        let (tx, rx) = mpsc::channel();
+        let h = NativeHandle::spawn(Box::new(move |e| {
+            if let NativeEvent::DisplayChanged = e {
+                let _ = tx.send(());
+            }
+        }));
+        let cfg = OverlayConfig { style: Style::Line, pos: Pos::Tc, size: 100, opacity: 80, metrics: Metrics::default() };
+        h.send(NativeCmd::Overlay(OverlayCmd::Configure(cfg)));
+        let mut overlay = None;
+        for _ in 0..50 {
+            overlay = overlay_of(&h);
+            if overlay.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let overlay = overlay.expect("overlay window not created");
+        // WM_DPICHANGED carries the suggested window rect; the system rejects a null one.
+        let suggested = windows::Win32::Foundation::RECT { left: 0, top: 0, right: 10, bottom: 10 };
+        let dpi = LPARAM(&suggested as *const _ as isize);
+        for (msg, wparam, lparam) in [(WM_DISPLAYCHANGE, WPARAM(32), LPARAM(0)), (WM_DPICHANGED, WPARAM(96 << 16 | 96), dpi)] {
+            unsafe { SendMessageW(overlay, msg, Some(wparam), Some(lparam)) };
+            assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(()), "message {msg:#x}");
+        }
+        h.quit();
+        assert!(window_gone(overlay));
+    }
+
+    fn window_gone(hwnd: HWND) -> bool {
+        !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(hwnd)) }.as_bool()
     }
 }

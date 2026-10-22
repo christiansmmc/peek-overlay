@@ -2459,6 +2459,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "windows 0.62.2",
+ "windows-numerics",
 ]
 
 [[package]]
