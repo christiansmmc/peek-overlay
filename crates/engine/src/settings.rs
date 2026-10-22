@@ -112,7 +112,7 @@ pub enum LoadOutcome {
 
 pub fn settings_path() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_default();
-    base.join("perf-overlay").join("settings.json")
+    base.join("Peek").join("settings.json")
 }
 
 pub fn load(path: &Path) -> (Settings, LoadOutcome) {
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn save_creates_dir_and_roundtrips() {
         let dir = tempfile::tempdir().unwrap();
-        let p = dir.path().join("perf-overlay").join("settings.json");
+        let p = dir.path().join("Peek").join("settings.json");
         let s = Settings { pos: Pos::Bl, ..Settings::default() };
         save(&p, &s).unwrap();
         assert_eq!(load(&p), (s, LoadOutcome::Loaded));

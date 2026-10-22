@@ -2,6 +2,7 @@
 
 **Data:** 2026-10-22
 **Status:** aprovado (2026-10-22)
+**Nota (nome):** o app recebeu o nome **Peek**. Onde esta spec fala do nome visível, o título da janela de configuração, a dica da bandeja, o nome do executável/instalador e a pasta de configurações (`%APPDATA%\Peek`) usam "Peek". Nomes internos (crates `overlay-engine` e `perf-overlay`, sessão ETW) não mudaram.
 
 ## 1. Intenção
 
@@ -136,7 +137,7 @@ Esta seção inteira é decisão minha.
 
 ### 4.7 Configurações salvas
 
-JSON em `%APPDATA%\perf-overlay\settings.json`, gravado a cada mudança (não existe botão Salvar). Formato:
+JSON em `%APPDATA%\Peek\settings.json`, gravado a cada mudança (não existe botão Salvar). Formato:
 
 ```json
 {

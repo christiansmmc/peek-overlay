@@ -7,7 +7,7 @@ export function TitleBar() {
     <div class="titlebar" data-tauri-drag-region="deep">
       <div class="titlebar-brand">
         <span class="titlebar-mark" />
-        <span class="titlebar-title">Overlay de desempenho</span>
+        <span class="titlebar-title">Peek</span>
       </div>
       <button class="tb-btn" title="Minimizar" onClick={() => api.minimize()}>
         <svg width="10" height="10" viewBox="0 0 10 10">

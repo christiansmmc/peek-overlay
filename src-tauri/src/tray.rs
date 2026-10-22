@@ -14,7 +14,7 @@ pub fn build(app: &App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Sair", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &toggle, &sep, &quit])?;
     let mut tray = TrayIconBuilder::new()
-        .tooltip("Overlay de desempenho")
+        .tooltip("Peek")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {

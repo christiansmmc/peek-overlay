@@ -1,7 +1,7 @@
 //! Runs the whole engine (the `Controller`) without the Tauri shell and logs every UI event.
 //! Usage: engine_demo [--seconds N] [--settings <path>] [--log <path>]
 //!   --seconds N        how long to run before `shutdown()` (default 30)
-//!   --settings <path>  settings file (default: %APPDATA%\perf-overlay\settings.json)
+//!   --settings <path>  settings file (default: %APPDATA%\Peek\settings.json)
 //!   --log <path>       one JSON line {"event":..,"payload":..} per event (default: stdout)
 //! The saved shortcut (Ctrl+Shift+O by default) toggles the overlay; FPS needs elevation.
 use overlay_engine::controller::{Controller, UiSink};
@@ -38,7 +38,9 @@ fn main() {
         None => Box::new(std::io::stdout()),
     };
 
-    let (loaded, outcome) = settings::load(&settings_path);
+    let (mut loaded, outcome) = settings::load(&settings_path);
+    // Never let the demo (possibly elevated) rewrite the "Peek" scheduled task to point at engine_demo.exe.
+    loaded.general.startup = false;
     println!("engine_demo: settings {outcome:?} from {} for {seconds} s", settings_path.display());
     let controller = Controller::new(loaded, settings_path, Arc::new(LogSink(Mutex::new(out))));
     controller.start();

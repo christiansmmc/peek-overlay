@@ -140,7 +140,7 @@ impl Controller {
         let self_exe = std::env::current_exe()
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "perf-overlay.exe".to_string());
+            .unwrap_or_else(|| "Peek.exe".to_string());
         Self::with_self_exe(settings, settings_path, sink, self_exe)
     }
 

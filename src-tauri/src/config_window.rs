@@ -14,7 +14,7 @@ pub fn open(app: &AppHandle) {
         return;
     }
     let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html".into()))
-        .title("Overlay de desempenho")
+        .title("Peek")
         .inner_size(480.0, 680.0)
         .resizable(false)
         .maximizable(false)
@@ -32,6 +32,6 @@ pub fn open(app: &AppHandle) {
                 }
             });
         }
-        Err(e) => overlay_engine::trace!("config window failed: {e}"),
+        Err(_e) => overlay_engine::trace!("config window failed: {_e}"),
     }
 }
