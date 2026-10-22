@@ -75,6 +75,7 @@ struct Inner {
     sent_config: Option<OverlayConfig>,
     sent_visible: Option<bool>,
     sent_anchor: Option<Option<isize>>,
+    sent_watch: Option<(u32, isize)>,
 }
 
 impl Inner {
@@ -123,6 +124,16 @@ impl Controller {
             .ok()
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or_else(|| "perf-overlay.exe".to_string());
+        Self::with_self_exe(settings, settings_path, sink, self_exe)
+    }
+
+    /// `new`, ignoring `self_exe` instead of this executable (tests drive windows of their own process).
+    fn with_self_exe(
+        settings: Settings,
+        settings_path: PathBuf,
+        sink: Arc<dyn UiSink>,
+        self_exe: String,
+    ) -> Arc<Controller> {
         let detector = GameDetector::new(settings.general.auto_show);
         Arc::new_cyclic(|me| Controller {
             me: me.clone(),
@@ -153,6 +164,7 @@ impl Controller {
                 sent_config: None,
                 sent_visible: None,
                 sent_anchor: None,
+                sent_watch: None,
             }),
             sync_gate: Mutex::new(()),
             native: Mutex::new(None),
@@ -407,7 +419,10 @@ impl Controller {
         {
             let mut g = self.inner();
             // A game whose exit can't be waited on (OpenProcess denied) ends when its window dies.
+            // Not when its own process takes the focus: a live game may recreate its window.
             if let Some(game) = g.detector.game()
+                && g.exit_watch.is_none()
+                && info.pid != game.pid
                 && !foreground::is_window_alive(game.hwnd)
             {
                 g.detector.on_process_exited(game.pid);
@@ -548,7 +563,14 @@ impl Controller {
                     cmds.push(NativeCmd::SetTimers(timers));
                 }
 
-                // 5. Overlay: configuration, then anchor and a fresh frame before it shows.
+                // 5. A focused window that may still go fullscreen is watched for size changes.
+                let watch = self.location_target(&g);
+                if g.sent_watch != watch {
+                    g.sent_watch = watch;
+                    cmds.push(NativeCmd::WatchLocation(watch));
+                }
+
+                // 6. Overlay: configuration, then anchor and a fresh frame before it shows.
                 let config = g.overlay_config();
                 if g.sent_config.as_ref() != Some(&config) {
                     g.sent_config = Some(config.clone());
@@ -571,7 +593,7 @@ impl Controller {
                 }
             }
 
-            // 6. Status.
+            // 7. Status.
             let status = Status { overlay_visible: g.detector.visible(), game_name: g.game_name.clone() };
             if status != g.status {
                 events.push(("status", json(&status)));
@@ -590,6 +612,17 @@ impl Controller {
         for (event, payload) in events {
             self.sink.emit(event, payload);
         }
+    }
+
+    /// The foreground window, unless it is ignored, already covers its monitor, is the detected
+    /// game or is gone: spec 4.6 path 1 is a state, and a window may go fullscreen after the focus.
+    fn location_target(&self, g: &Inner) -> Option<(u32, isize)> {
+        let fg = g.last_fg.as_ref()?;
+        let watch = !fg.covers_monitor
+            && g.detector.game().map(|game| game.pid) != Some(fg.pid)
+            && !process_info::is_ignored(&fg.exe_name, &self.self_exe)
+            && foreground::is_window_alive(fg.hwnd);
+        watch.then_some((fg.pid, fg.hwnd))
     }
 
     /// Points the frame tracker at the new game (or none), names it and replaces the exit watch.
@@ -725,31 +758,125 @@ mod tests {
         hwnd.0 as isize
     }
 
-    #[test]
-    fn fullscreen_presenter_is_detected_named_and_lost_with_its_window() {
+    fn destroy(hwnd: isize) {
         use windows::Win32::UI::WindowsAndMessaging::DestroyWindow;
-        let (c, log, _dir) = controller(Settings::default());
-        let pid = std::process::id();
-        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
-        let info = ForegroundInfo { hwnd, pid, exe_name: "game.exe".into(), title: "Jogo Teste".into(), covers_monitor: true };
-        c.on_native_event(NativeEvent::Foreground(info));
-        assert!(log.payloads("status").is_empty(), "a candidate is not a game yet");
+        unsafe { DestroyWindow(windows::Win32::Foundation::HWND(hwnd as *mut _)).unwrap() };
+    }
 
-        // 2.1 s of steady presents up to now, then a detect tick confirms the candidate.
+    fn focus(c: &Controller, hwnd: isize, pid: u32, covers_monitor: bool) {
+        let info = ForegroundInfo { hwnd, pid, exe_name: "game.exe".into(), title: "Jogo Teste".into(), covers_monitor };
+        c.on_native_event(NativeEvent::Foreground(info));
+    }
+
+    /// 2.1 s of steady presents by `pid` up to now, then a detect tick.
+    fn present_and_tick(c: &Controller, pid: u32) {
         let now = now_ns();
         for i in (0..=126u64).rev() {
             c.frames.on_present(pid, now - i * 16_666_666);
         }
         c.on_native_event(NativeEvent::Timer(TimerKind::Detect));
+    }
+
+    /// A fullscreen window of this process, detected as the game; returns its handle.
+    fn detect_game(c: &Controller, log: &Log) -> isize {
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(c, hwnd, std::process::id(), true);
+        assert!(log.payloads("status").is_empty(), "a candidate is not a game yet");
+        present_and_tick(c, std::process::id());
         assert_eq!(log.payloads("status"), vec![serde_json::json!({"overlayVisible": true, "gameName": "Jogo Teste"})]);
-        assert_eq!(c.frames.target(), Some(pid));
+        hwnd
+    }
+
+    #[test]
+    fn fullscreen_presenter_is_detected_named_and_lost_with_its_window() {
+        let (c, log, _dir) = controller(Settings::default());
+        let hwnd = detect_game(&c, &log);
+        assert_eq!(c.frames.target(), Some(std::process::id()));
 
         // Its window is gone (no exit watch here): the next focus change ends the detection.
-        unsafe { DestroyWindow(windows::Win32::Foundation::HWND(hwnd as *mut _)).unwrap() };
+        destroy(hwnd);
         let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), title: String::new(), covers_monitor: false };
         c.on_native_event(NativeEvent::Foreground(other));
         assert_eq!(log.payloads("status").last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": null})));
         assert_eq!(c.frames.target(), None);
+    }
+
+    #[test]
+    fn recreated_game_window_keeps_the_game_and_its_suppression() {
+        let (c, log, _dir) = controller(Settings::default());
+        let pid = std::process::id();
+        let old = detect_game(&c, &log);
+        c.toggle_overlay();
+        let hidden = serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"});
+        assert_eq!(log.payloads("status").last(), Some(&hidden));
+
+        // The game replaces its window: same process, new handle, the old one is dead.
+        destroy(old);
+        let new = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, new, pid, true);
+        present_and_tick(&c, pid);
+        assert_eq!(c.inner().detector.game().map(|g| (g.pid, g.hwnd)), Some((pid, new)));
+        assert_eq!(log.payloads("status").last(), Some(&hidden), "the hotkey hide still holds");
+        assert_eq!(log.payloads("status").len(), 2);
+        destroy(new);
+    }
+
+    #[test]
+    fn watched_game_is_not_ended_by_a_dead_window() {
+        let (c, log, _dir) = controller(Settings::default());
+        let pid = std::process::id();
+        let hwnd = detect_game(&c, &log);
+        // Its exit is waited on (this process never exits during the test), so the dead
+        // window is not taken as the end of the game.
+        c.inner().exit_watch = watch_exit(pid, Box::new(|| {}));
+        destroy(hwnd);
+        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), title: String::new(), covers_monitor: false };
+        c.on_native_event(NativeEvent::Foreground(other));
+        assert_eq!(c.inner().detector.game().map(|g| g.pid), Some(pid));
+        assert_eq!(log.payloads("status").last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"})));
+        drop(c.inner().exit_watch.take());
+    }
+
+    /// Moves and sizes `hwnd` to exactly cover the monitor it is on.
+    fn cover_its_monitor(hwnd: isize) {
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+        use windows::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos};
+        let h = windows::Win32::Foundation::HWND(hwnd as *mut _);
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        assert!(unsafe { GetMonitorInfoW(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mut mi) }.as_bool());
+        let rc = mi.rcMonitor;
+        let (w, cy) = (rc.right - rc.left, rc.bottom - rc.top);
+        unsafe { SetWindowPos(h, None, rc.left, rc.top, w, cy, SWP_NOZORDER | SWP_NOACTIVATE) }.unwrap();
+    }
+
+    #[test]
+    fn window_that_goes_fullscreen_after_the_focus_becomes_a_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(Log::default());
+        let settings = Settings { shortcut: s(&["Ctrl", "Alt", "Shift", "F8"]), ..Settings::default() };
+        // This test's own windows play the game, so this executable must not be the ignored one.
+        let path = dir.path().join("settings.json");
+        let c = Controller::with_self_exe(settings, path, log.clone(), "perf-overlay.exe".into());
+        c.start();
+        // Let the startup report of the real foreground window pass first.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let pid = std::process::id();
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, pid, false);
+        assert_eq!(c.inner().detector.candidate_pid(), None, "windowed and hidden: not a candidate");
+        assert_eq!(c.inner().sent_watch, Some((pid, hwnd)));
+
+        // No focus change from here on: only the location hook can tell.
+        cover_its_monitor(hwnd);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while c.inner().detector.candidate_pid().is_none() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(c.inner().detector.candidate_pid(), Some(pid));
+        assert_eq!(c.inner().sent_watch, None, "a window covering its monitor is no longer watched");
+        c.shutdown();
+        destroy(hwnd);
     }
 
     #[test]

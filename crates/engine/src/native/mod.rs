@@ -1,5 +1,6 @@
 //! Dedicated native thread: a message-only window that owns the global hotkey and the timers,
-//! the foreground WinEvent hook, plus the overlay window (created on the first `NativeCmd::Overlay`).
+//! the foreground WinEvent hook and the location hook on the watched window, plus the overlay
+//! window (created on the first `NativeCmd::Overlay`).
 //! Later tasks extend `NativeCmd`/`NativeEvent` and the single dispatch in `handle_cmd`.
 
 pub mod foreground;
@@ -19,10 +20,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     HOT_KEY_MODIFIERS, RegisterHotKey, UnregisterHotKey,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CHILDID_SELF, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_SYSTEM_FOREGROUND,
-    GetForegroundWindow, GetMessageW, HWND_MESSAGE, KillTimer, MSG, OBJID_WINDOW, PostMessageW, PostQuitMessage,
-    RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE, WINDOW_STYLE, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER, WNDCLASSW,
+    CHILDID_SELF, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetMessageW, GetWindowThreadProcessId, HWND_MESSAGE, KillTimer,
+    MSG, OBJID_WINDOW, PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, TranslateMessage, WINDOW_EX_STYLE,
+    WINDOW_STYLE, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_DESTROY, WM_HOTKEY, WM_TIMER, WNDCLASSW,
 };
 use windows::core::w;
 
@@ -82,8 +83,9 @@ pub enum NativeEvent {
     Timer(TimerKind),
     /// Display resolution, layout or DPI changed (seen by the overlay window).
     DisplayChanged,
-    /// A window of another process came to the foreground; also sent once at startup for the
-    /// window that is already in the foreground.
+    /// A window of another process came to the foreground. Also sent at startup and after a
+    /// display change for the window already in the foreground, and when the window watched by
+    /// `WatchLocation` starts or stops covering its monitor.
     Foreground(ForegroundInfo),
 }
 
@@ -92,7 +94,17 @@ pub enum NativeCmd {
     UnregisterHotkey,
     SetTimers(Timers),
     Overlay(OverlayCmd),
+    /// Watches the size of window `hwnd` of process `pid` (`None` stops), so a window that goes
+    /// fullscreen after taking the focus is reported without a new focus change.
+    WatchLocation(Option<(u32, isize)>),
     Quit,
+}
+
+/// Location hook on the watched window, with its last known fullscreen state.
+struct LocationWatch {
+    hook: HWINEVENTHOOK,
+    hwnd: isize,
+    covers: bool,
 }
 
 /// State owned by the native thread, reachable from the window procedure.
@@ -102,6 +114,7 @@ struct ThreadState {
     timers: Timers,
     hotkey_registered: bool,
     overlay: Option<OverlayWindow>,
+    location: Option<LocationWatch>,
 }
 
 thread_local! {
@@ -165,6 +178,7 @@ fn run_thread(
             timers: Timers::default(),
             hotkey_registered: false,
             overlay: None,
+            location: None,
         });
     });
     let _ = ready_tx.send(hwnd.0 as isize);
@@ -185,12 +199,7 @@ fn run_thread(
         crate::trace!("native: SetWinEventHook(EVENT_SYSTEM_FOREGROUND) failed");
     }
     // The hook only reports changes; start from the window that already has the focus.
-    let current = unsafe { GetForegroundWindow() };
-    if let Some(info) = foreground::describe(current.0 as isize)
-        && info.pid != unsafe { GetCurrentProcessId() }
-    {
-        emit(NativeEvent::Foreground(info));
-    }
+    emit_current_foreground();
 
     let mut msg = MSG::default();
     unsafe {
@@ -202,6 +211,7 @@ fn run_thread(
             let _ = UnhookWinEvent(hook);
         }
     }
+    watch_location(None);
     // Drop the state (and the overlay window) with the borrow already released.
     let state = STATE.with(|s| s.borrow_mut().take());
     drop(state);
@@ -254,6 +264,86 @@ unsafe extern "system" fn on_win_event(
     }
 }
 
+/// Reports the current foreground window, unless it is one of ours (the hook skips those too).
+fn emit_current_foreground() {
+    let current = unsafe { GetForegroundWindow() };
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(current, Some(&mut pid)) };
+    if pid == unsafe { GetCurrentProcessId() } {
+        return;
+    }
+    if let Some(info) = foreground::describe(current.0 as isize) {
+        emit(NativeEvent::Foreground(info));
+    }
+}
+
+/// Replaces the location hook. The new hook is scoped to `pid`, so only that process's events
+/// wake this thread, and they are dropped unless they move the watched window.
+fn watch_location(target: Option<(u32, isize)>) {
+    let old = STATE.with(|s| s.borrow_mut().as_mut().and_then(|st| st.location.take()));
+    if let Some(old) = old {
+        unsafe {
+            let _ = UnhookWinEvent(old.hook);
+        }
+    }
+    let Some((pid, hwnd)) = target else { return };
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            None,
+            Some(on_location_event),
+            pid,
+            0,
+            WINEVENT_OUTOFCONTEXT,
+        )
+    };
+    if hook.is_invalid() {
+        crate::trace!("native: SetWinEventHook(EVENT_OBJECT_LOCATIONCHANGE, pid {pid}) failed");
+        return;
+    }
+    crate::trace!("native: watching the location of pid={pid}");
+    // Only windows that did not cover their monitor are watched; it may have changed already.
+    STATE.with(|s| {
+        if let Some(st) = s.borrow_mut().as_mut() {
+            st.location = Some(LocationWatch { hook, hwnd, covers: false });
+        }
+    });
+    check_location(hwnd);
+}
+
+unsafe extern "system" fn on_location_event(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _event_thread: u32,
+    _event_time: u32,
+) {
+    if event != EVENT_OBJECT_LOCATIONCHANGE || id_object != OBJID_WINDOW.0 || id_child != CHILDID_SELF as i32 {
+        return;
+    }
+    check_location(hwnd.0 as isize);
+}
+
+/// Emits `Foreground` for the watched window when it starts or stops covering its monitor.
+fn check_location(hwnd: isize) {
+    let watched = STATE.with(|s| s.borrow().as_ref().and_then(|st| st.location.as_ref().map(|l| (l.hwnd, l.covers))));
+    let Some((watched, covers)) = watched else { return };
+    if hwnd != watched || foreground::covers_its_monitor(hwnd) == covers {
+        return;
+    }
+    STATE.with(|s| {
+        if let Some(l) = s.borrow_mut().as_mut().and_then(|st| st.location.as_mut()) {
+            l.covers = !covers;
+        }
+    });
+    if let Some(info) = foreground::describe(hwnd) {
+        emit(NativeEvent::Foreground(info));
+    }
+}
+
 fn emit(event: NativeEvent) {
     STATE.with(|s| {
         if let Some(st) = s.borrow().as_ref() {
@@ -282,6 +372,8 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_OVERLAY_DISPLAY_CHANGED => {
             with_overlay(hwnd, false, OverlayWindow::on_display_changed);
             emit(NativeEvent::DisplayChanged);
+            // An exclusive-fullscreen mode switch changes the display without a focus change.
+            emit_current_foreground();
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -313,6 +405,7 @@ fn handle_cmd(hwnd: HWND, cmd: NativeCmd) {
         NativeCmd::UnregisterHotkey => unregister_hotkey(hwnd),
         NativeCmd::SetTimers(wanted) => set_timers(hwnd, wanted),
         NativeCmd::Overlay(cmd) => with_overlay(hwnd, true, |o| o.handle(cmd)),
+        NativeCmd::WatchLocation(target) => watch_location(target),
         NativeCmd::Quit => unsafe {
             // WM_DESTROY ends the loop; timers and hotkey die with the window.
             let _ = DestroyWindow(hwnd);
@@ -475,6 +568,48 @@ mod tests {
         }
         h.quit();
         assert!(window_gone(overlay));
+    }
+
+    #[test]
+    fn location_watch_reports_when_the_window_starts_covering_its_monitor() {
+        use std::{sync::mpsc, time::Duration};
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+        use windows::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WS_POPUP};
+        let hwnd = unsafe {
+            CreateWindowExW(Default::default(), w!("STATIC"), w!("Jogo Teste"), WS_POPUP, 0, 0, 10, 10, None, None, None, None)
+        }
+        .unwrap();
+        let watched = hwnd.0 as isize;
+        let (tx, rx) = mpsc::channel();
+        let h = NativeHandle::spawn(Box::new(move |e| {
+            // The startup report of the real foreground window is someone else's.
+            if let NativeEvent::Foreground(info) = e
+                && info.hwnd == watched
+            {
+                let _ = tx.send(info.covers_monitor);
+            }
+        }));
+        h.send(NativeCmd::WatchLocation(Some((std::process::id(), watched))));
+        let place = |x: i32, y: i32, w: i32, cy: i32| unsafe {
+            SetWindowPos(hwnd, None, x, y, w, cy, SWP_NOZORDER | SWP_NOACTIVATE).unwrap();
+        };
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        assert!(unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi) }.as_bool());
+        let m = mi.rcMonitor;
+
+        place(5, 5, 20, 20);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a move that stays windowed is not reported");
+        place(m.left, m.top, m.right - m.left, m.bottom - m.top);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
+        place(0, 0, 10, 10);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(false));
+
+        h.send(NativeCmd::WatchLocation(None));
+        std::thread::sleep(Duration::from_millis(100));
+        place(m.left, m.top, m.right - m.left, m.bottom - m.top);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "unwatched windows are not reported");
+        h.quit();
+        unsafe { DestroyWindow(hwnd).unwrap() };
     }
 
     fn window_gone(hwnd: HWND) -> bool {

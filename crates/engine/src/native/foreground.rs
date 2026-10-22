@@ -5,7 +5,7 @@ use crate::process_info;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsWindow,
+    GetWindowRect, GetWindowThreadProcessId, InternalGetWindowText, IsWindow,
 };
 
 #[derive(Clone, Debug)]
@@ -52,24 +52,24 @@ pub fn describe(hwnd: isize) -> Option<ForegroundInfo> {
     let exe_name = process_info::exe_path(pid)
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_default();
-    Some(ForegroundInfo { hwnd, pid, exe_name, title: window_title(h), covers_monitor: fills_its_monitor(h) })
+    Some(ForegroundInfo { hwnd, pid, exe_name, title: window_title(h), covers_monitor: covers_its_monitor(hwnd) })
 }
 
 pub fn is_window_alive(hwnd: isize) -> bool {
     unsafe { IsWindow(Some(HWND(hwnd as *mut _))) }.as_bool()
 }
 
+/// The title the system keeps for the window. Unlike `GetWindowTextW`, it never sends
+/// `WM_GETTEXT`, which for a window of this process would block until its thread pumps messages.
 fn window_title(h: HWND) -> String {
-    let len = unsafe { GetWindowTextLengthW(h) };
-    if len <= 0 {
-        return String::new();
-    }
-    let mut buf = vec![0u16; len as usize + 1];
-    let n = unsafe { GetWindowTextW(h, &mut buf) };
-    String::from_utf16_lossy(&buf[..n.max(0) as usize])
+    let mut buf = [0u16; 512];
+    let n = unsafe { InternalGetWindowText(h, &mut buf) };
+    String::from_utf16_lossy(&buf[..n.clamp(0, buf.len() as i32) as usize])
 }
 
-fn fills_its_monitor(h: HWND) -> bool {
+/// `covers_monitor` for a live window and the monitor it is on (false if either can't be read).
+pub fn covers_its_monitor(hwnd: isize) -> bool {
+    let h = HWND(hwnd as *mut _);
     unsafe {
         let mut wr = RECT::default();
         if GetWindowRect(h, &mut wr).is_err() {
@@ -133,5 +133,38 @@ mod tests {
         assert!(!is_window_alive(hwnd.0 as isize));
         assert!(describe(hwnd.0 as isize).is_none());
         assert!(describe(0).is_none());
+    }
+
+    #[test]
+    fn describe_never_waits_for_the_thread_that_owns_the_window() {
+        use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WS_POPUP};
+        use windows::core::w;
+        let hwnd = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("STATIC"),
+                w!("Jogo Teste"),
+                WS_POPUP,
+                0,
+                0,
+                10,
+                10,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .unwrap();
+        let raw = hwnd.0 as isize;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(describe(raw).map(|info| info.title));
+        });
+        // This thread pumps no messages while it waits, like the main thread blocked on the
+        // native thread at startup: a WM_GETTEXT sent here would never be answered.
+        let title = rx.recv_timeout(std::time::Duration::from_secs(1));
+        unsafe { DestroyWindow(hwnd).unwrap() };
+        assert_eq!(title, Ok(Some("Jogo Teste".to_string())));
     }
 }
