@@ -86,7 +86,11 @@ impl GameDetector {
         }
         self.game = Some(c);
         self.candidate = None;
-        if c.path == DetectPath::Fullscreen && self.auto_show && self.mode == Mode::Hidden {
+        if c.path == DetectPath::Fullscreen
+            && self.auto_show
+            && self.mode == Mode::Hidden
+            && self.suppressed != Some(pid)
+        {
             self.mode = Mode::Auto;
         }
     }
@@ -97,10 +101,13 @@ impl GameDetector {
         }
         self.game = None;
         self.suppressed = None;
+        if self.fg.as_ref().is_some_and(|f| f.pid == pid) {
+            self.fg = None;
+        }
         if self.mode == Mode::Auto {
             self.mode = Mode::Hidden;
-            self.refresh_candidate();
         }
+        self.refresh_candidate();
     }
 
     pub fn toggle(&mut self) {
@@ -113,11 +120,7 @@ impl GameDetector {
         }
         if v {
             self.mode = Mode::Manual;
-            if let Some(fg) = &self.fg {
-                if !fg.ignored && self.game.map(|g| g.pid) != Some(fg.pid) {
-                    self.candidate = Some(Game { pid: fg.pid, hwnd: fg.hwnd, path: DetectPath::Windowed });
-                }
-            }
+            self.refresh_candidate();
         } else {
             self.suppressed = self.game.map(|g| g.pid).or(self.suppressed);
             self.mode = Mode::Hidden;
@@ -144,7 +147,8 @@ impl GameDetector {
     fn refresh_candidate(&mut self) {
         let visible = self.visible();
         self.candidate = self.fg.as_ref().and_then(|fg| {
-            let path = if fg.ignored {
+            // The detected game is never re-nominated: returning focus to it is a focus event.
+            let path = if fg.ignored || self.game.is_some_and(|g| g.pid == fg.pid) {
                 return None;
             } else if fg.covers_monitor && (self.auto_show || visible) {
                 DetectPath::Fullscreen
@@ -262,4 +266,64 @@ fn anchor_prefers_game_window() {
     assert_eq!(d.anchor_hwnd(), Some(10));
 }
 
+    fn hide_and_confirm_tests_helper() -> GameDetector {
+        let mut d = GameDetector::new(true);
+        d.on_foreground(fg(1, true));
+        d.on_presenting(1, CONFIRM_MS);
+        d
+    }
+    #[test]
+    fn hotkey_hide_is_not_undone_by_detect_tick() {
+        let mut d = hide_and_confirm_tests_helper();
+        d.toggle();
+        assert_eq!(d.candidate_pid(), None);
+        d.on_presenting(1, CONFIRM_MS);
+        assert!(!d.visible());
+    }
+    #[test]
+    fn hotkey_hide_survives_alt_tab_and_tick() {
+        let mut d = hide_and_confirm_tests_helper();
+        d.toggle();
+        d.on_foreground(fg(9, false));
+        d.on_foreground(fg(1, true));
+        assert_eq!(d.candidate_pid(), None);
+        d.on_presenting(1, CONFIRM_MS);
+        assert!(!d.visible());
+    }
+    #[test]
+    fn returning_to_detected_game_needs_no_candidate() {
+        let mut d = hide_and_confirm_tests_helper();
+        d.on_foreground(fg(9, false));
+        d.on_foreground(fg(1, true));
+        assert_eq!(d.candidate_pid(), None);
+        assert!(d.visible());
+    }
+    #[test]
+    fn game_exit_leaves_nothing_running() {
+        use crate::effects::{Effects, plan_effects};
+        use crate::settings::Metrics;
+        let m = Metrics::default();
+        let mut d = hide_and_confirm_tests_helper();
+        d.on_process_exited(1);
+        assert_eq!(d.candidate_pid(), None);
+        assert_eq!(plan_effects(d.visible(), false, d.candidate_pid().is_some(), &m), Effects::default());
+    }
+    #[test]
+    fn manual_overlay_after_game_exit_has_no_dead_candidate() {
+        let mut d = GameDetector::new(true);
+        d.toggle();
+        d.on_foreground(fg(1, true));
+        d.on_presenting(1, CONFIRM_MS);
+        d.on_process_exited(1);
+        assert!(d.visible());
+        assert_eq!(d.candidate_pid(), None);
+    }
+    #[test]
+    fn manual_show_over_fullscreen_uses_fullscreen_path() {
+        let mut d = GameDetector::new(false);
+        d.on_foreground(fg(4, true));
+        d.toggle();
+        d.on_presenting(4, CONFIRM_MS);
+        assert_eq!(d.game().unwrap().path, DetectPath::Fullscreen);
+    }
 }
