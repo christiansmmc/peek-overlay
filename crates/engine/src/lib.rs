@@ -2,6 +2,7 @@ pub mod frames;
 pub mod hotkey;
 pub mod model;
 pub mod native;
+pub mod pawnio;
 pub mod sensors;
 pub mod settings;
 

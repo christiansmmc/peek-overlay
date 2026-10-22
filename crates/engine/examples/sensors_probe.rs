@@ -1,4 +1,4 @@
-//! Prints CPU/GPU usage and temperatures every 500 ms, without elevation.
+//! Prints CPU/GPU usage and temperatures every 500 ms. CPU temperature needs PawnIO and elevation.
 //! Usage: sensors_probe [--seconds N]
 use overlay_engine::sensors::{Sensors, default_dedicated_luid};
 use overlay_engine::settings::Metrics;
@@ -21,6 +21,7 @@ fn main() {
     let run_for = Duration::from_secs(seconds);
 
     let mut sensors = Sensors::new();
+    println!("pawnio_installed={}", overlay_engine::pawnio::is_installed());
     println!("default_luid={:?}", default_dedicated_luid().map(|l| format!("{l:#x}")));
     println!("availability={:?}", sensors.availability());
 

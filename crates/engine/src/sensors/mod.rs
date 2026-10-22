@@ -1,23 +1,23 @@
-//! Hardware sensors read without elevation: CPU and GPU usage via PDH, GPU temperature via
-//! D3DKMT. CPU temperature (PawnIO) is a slot Task 8 fills; here it is always unavailable.
+//! Hardware sensors: CPU and GPU usage via PDH and GPU temperature via D3DKMT, all without
+//! elevation; CPU temperature through the PawnIO driver, which needs elevation.
 //!
 //! PDH rate counters need two collects, so each counter's first sample after `new()`, or after a
 //! pause longer than `MAX_SAMPLE_GAP` (the controller only samples while the overlay or the
 //! settings window is visible), is `None` instead of an average over the whole pause.
 
 pub mod adapter;
+pub mod cpu_temp;
 pub mod cpu_usage;
 pub mod gpu_temp;
 pub mod gpu_usage;
 
 pub use adapter::default_dedicated_luid;
+pub use cpu_temp::{CpuKind, CpuTemp, cpu_kind, cpu_kind_from, intel_pkg_c, zen_tctl_c};
 pub use cpu_usage::CpuUsage;
 pub use gpu_temp::{deci_celsius_to_c, read_gpu_temp};
 pub use gpu_usage::{EngineInstance, GpuUsage, parse_engine_instance, pick_adapter_usage};
 
-use crate::model::{
-    Avail, REASON_CPU_UNSUPPORTED, REASON_NO_CPU_COUNTERS, REASON_NO_GPU_COUNTERS, REASON_NO_GPU_TEMP,
-};
+use crate::model::{Avail, REASON_NO_CPU_COUNTERS, REASON_NO_GPU_COUNTERS, REASON_NO_GPU_TEMP};
 use crate::settings::Metrics;
 use std::time::{Duration, Instant};
 use windows::Win32::System::Performance::{
@@ -52,6 +52,7 @@ pub struct SensorAvailability {
 pub struct Sensors {
     cpu: Option<CpuUsage>,
     gpu: Option<GpuUsage>,
+    cpu_temp: Option<CpuTemp>,
     default_luid: Option<Luid>,
     availability: SensorAvailability,
 }
@@ -79,13 +80,23 @@ impl Sensors {
         let gpu = GpuUsage::new().inspect_err(|_e| crate::trace!("gpu usage: {_e}")).ok();
         let default_luid = default_dedicated_luid();
         let gpu_temp_ok = default_luid.and_then(read_gpu_temp).is_some();
+        let (cpu_temp, cpu_temp_avail) = open_cpu_temp();
         let availability = SensorAvailability {
             cpu_use: if cpu.is_some() { Avail::Ok } else { no_sensor(REASON_NO_CPU_COUNTERS) },
             gpu_use: if gpu.is_some() { Avail::Ok } else { no_sensor(REASON_NO_GPU_COUNTERS) },
             gpu_temp: if gpu_temp_ok { Avail::Ok } else { no_sensor(REASON_NO_GPU_TEMP) },
-            cpu_temp: no_sensor(REASON_CPU_UNSUPPORTED),
+            cpu_temp: cpu_temp_avail,
         };
-        Sensors { cpu, gpu, default_luid, availability }
+        Sensors { cpu, gpu, cpu_temp, default_luid, availability }
+    }
+
+    /// Reopens the CPU temperature sensor, e.g. after PawnIO was installed.
+    pub fn reload_cpu_temp(&mut self) {
+        // Close the old PawnIO handle before opening a new one.
+        self.cpu_temp = None;
+        let (cpu_temp, avail) = open_cpu_temp();
+        self.cpu_temp = cpu_temp;
+        self.availability.cpu_temp = avail;
     }
 
     pub fn availability(&self) -> SensorAvailability {
@@ -106,7 +117,15 @@ impl Sensors {
         } else {
             None
         };
-        SensorSample { cpu_use, gpu_use: usage.map(|(_, pct)| pct), gpu_temp, cpu_temp: None }
+        let cpu_temp = if wanted.cpu_temp { self.cpu_temp.as_ref().and_then(CpuTemp::read) } else { None };
+        SensorSample { cpu_use, gpu_use: usage.map(|(_, pct)| pct), gpu_temp, cpu_temp }
+    }
+}
+
+fn open_cpu_temp() -> (Option<CpuTemp>, Avail) {
+    match CpuTemp::open() {
+        Ok(sensor) => (Some(sensor), Avail::Ok),
+        Err(avail) => (None, avail),
     }
 }
 
