@@ -41,6 +41,11 @@ impl FrameTracker {
         self.presents.is_empty()
     }
 
+    /// Timestamp of the newest present, if any.
+    pub fn last_present_ns(&self) -> Option<u64> {
+        self.presents.back().copied()
+    }
+
     /// (count, first, last) of presents in (now - WINDOW_NS, now], or None if
     /// fewer than 2 or the stream is stale.
     fn window(&self, now_ns: u64) -> Option<(u64, u64, u64)> {
@@ -199,6 +204,13 @@ mod tests {
             assert_eq!(t.fps(now), Some(fps as u32));
             assert!((t.avg_frametime_ms(now).unwrap() - ft).abs() < 0.01);
         }
+    }
+    #[test]
+    fn last_present_is_the_newest_timestamp() {
+        let mut t = FrameTracker::new();
+        assert_eq!(t.last_present_ns(), None);
+        let last = feed(&mut t, 60.0, 1.0, 5_000);
+        assert_eq!(t.last_present_ns(), Some(last));
     }
     #[test]
     fn stale_after_one_second_without_presents() {
