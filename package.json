@@ -15,7 +15,7 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "private": "true",
   "dependencies": {
     "preact": "^11.0.1"
