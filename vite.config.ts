@@ -1,0 +1,9 @@
+import { defineConfig } from 'vite';
+import preact from '@preact/preset-vite';
+
+export default defineConfig({
+  plugins: [preact()],
+  server: { port: 1420, strictPort: true },
+  clearScreen: false,
+  build: { target: 'es2022' },
+});
