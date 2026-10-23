@@ -85,7 +85,7 @@ pub enum NativeEvent {
     DisplayChanged,
     /// A window of another process came to the foreground. Also sent at startup and after a
     /// display change for the window already in the foreground, and when the window watched by
-    /// `WatchLocation` starts or stops covering its monitor.
+    /// `WatchLocation` starts or stops covering its monitor while it has the focus.
     Foreground(ForegroundInfo),
 }
 
@@ -327,11 +327,13 @@ unsafe extern "system" fn on_location_event(
     check_location(hwnd.0 as isize);
 }
 
-/// Emits `Foreground` for the watched window when it starts or stops covering its monitor.
+/// Emits `Foreground` for the watched window when it starts or stops covering its monitor,
+/// as long as it still has the focus: a location event queued before the focus moved on (and
+/// before the new `WatchLocation`) must not report a window that has just lost it.
 fn check_location(hwnd: isize) {
     let watched = STATE.with(|s| s.borrow().as_ref().and_then(|st| st.location.as_ref().map(|l| (l.hwnd, l.covers))));
     let Some((watched, covers)) = watched else { return };
-    if hwnd != watched || foreground::covers_its_monitor(hwnd) == covers {
+    if hwnd != watched || !is_foreground(hwnd) || foreground::covers_its_monitor(hwnd) == covers {
         return;
     }
     STATE.with(|s| {
@@ -341,6 +343,42 @@ fn check_location(hwnd: isize) {
     });
     if let Some(info) = foreground::describe(hwnd) {
         emit(NativeEvent::Foreground(info));
+    }
+}
+
+fn is_foreground(hwnd: isize) -> bool {
+    #[cfg(test)]
+    if test_support::pretends_foreground(hwnd) {
+        return true;
+    }
+    unsafe { GetForegroundWindow() }.0 as isize == hwnd
+}
+
+/// Test windows cannot take the real focus from the desktop the tests run on.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Mutex;
+
+    static FOREGROUND: Mutex<Vec<isize>> = Mutex::new(Vec::new());
+
+    /// Treats `hwnd` as the foreground window for the location hook until dropped.
+    pub(crate) struct PretendForeground(isize);
+
+    impl PretendForeground {
+        pub(crate) fn new(hwnd: isize) -> Self {
+            FOREGROUND.lock().unwrap().push(hwnd);
+            PretendForeground(hwnd)
+        }
+    }
+
+    impl Drop for PretendForeground {
+        fn drop(&mut self) {
+            FOREGROUND.lock().unwrap().retain(|&h| h != self.0);
+        }
+    }
+
+    pub(super) fn pretends_foreground(hwnd: isize) -> bool {
+        FOREGROUND.lock().unwrap().contains(&hwnd)
     }
 }
 
@@ -580,6 +618,7 @@ mod tests {
         }
         .unwrap();
         let watched = hwnd.0 as isize;
+        let _focus = test_support::PretendForeground::new(watched);
         let (tx, rx) = mpsc::channel();
         let h = NativeHandle::spawn(Box::new(move |e| {
             // The startup report of the real foreground window is someone else's.
@@ -608,6 +647,46 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         place(m.left, m.top, m.right - m.left, m.bottom - m.top);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "unwatched windows are not reported");
+        h.quit();
+        unsafe { DestroyWindow(hwnd).unwrap() };
+    }
+
+    #[test]
+    fn location_watch_ignores_a_window_without_the_focus() {
+        use std::{sync::mpsc, time::Duration};
+        use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow};
+        use windows::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos, WS_POPUP};
+        // A hidden test window never has the focus, like a window whose location event was
+        // queued before the focus moved on.
+        let hwnd = unsafe {
+            CreateWindowExW(Default::default(), w!("STATIC"), w!("Jogo Teste"), WS_POPUP, 0, 0, 10, 10, None, None, None, None)
+        }
+        .unwrap();
+        let watched = hwnd.0 as isize;
+        let (tx, rx) = mpsc::channel();
+        let h = NativeHandle::spawn(Box::new(move |e| {
+            if let NativeEvent::Foreground(info) = e
+                && info.hwnd == watched
+            {
+                let _ = tx.send(info.covers_monitor);
+            }
+        }));
+        h.send(NativeCmd::WatchLocation(Some((std::process::id(), watched))));
+        let mut mi = MONITORINFO { cbSize: size_of::<MONITORINFO>() as u32, ..Default::default() };
+        assert!(unsafe { GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mut mi) }.as_bool());
+        let m = mi.rcMonitor;
+        let place = |x: i32, y: i32, w: i32, cy: i32| unsafe {
+            SetWindowPos(hwnd, None, x, y, w, cy, SWP_NOZORDER | SWP_NOACTIVATE).unwrap();
+        };
+        place(m.left, m.top, m.right - m.left, m.bottom - m.top);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "a window without the focus is not reported");
+
+        // With the focus, the same change is reported.
+        let _focus = test_support::PretendForeground::new(watched);
+        place(0, 0, 10, 10);
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err(), "still windowed: nothing changed");
+        place(m.left, m.top, m.right - m.left, m.bottom - m.top);
+        assert_eq!(rx.recv_timeout(Duration::from_secs(1)), Ok(true));
         h.quit();
         unsafe { DestroyWindow(hwnd).unwrap() };
     }

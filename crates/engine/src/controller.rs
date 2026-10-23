@@ -917,18 +917,25 @@ mod tests {
 
         let pid = std::process::id();
         let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        let _focus = crate::native::test_support::PretendForeground::new(hwnd);
         focus(&c, hwnd, pid, false);
         assert_eq!(c.inner().detector.candidate_pid(), None, "windowed and hidden: not a candidate");
         assert_eq!(c.inner().sent_watch, Some((pid, hwnd)));
 
-        // No focus change from here on: only the location hook can tell.
+        // No focus change from here on: only the location hook can tell. The candidate appears
+        // under `inner` and the sync that stops the watch follows: wait for both.
         cover_its_monitor(hwnd);
+        let settled = || {
+            let g = c.inner();
+            (g.detector.candidate_pid(), g.sent_watch)
+        };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while c.inner().detector.candidate_pid().is_none() && std::time::Instant::now() < deadline {
+        while settled() != (Some(pid), None) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(c.inner().detector.candidate_pid(), Some(pid));
-        assert_eq!(c.inner().sent_watch, None, "a window covering its monitor is no longer watched");
+        let (candidate, watch) = settled();
+        assert_eq!(candidate, Some(pid));
+        assert_eq!(watch, None, "a window covering its monitor is no longer watched");
         c.shutdown();
         destroy(hwnd);
     }
