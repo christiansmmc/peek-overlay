@@ -48,3 +48,14 @@ Orçamento: oculto < 20 MB e ~0% CPU; overlay visível < 40 MB e < 1% CPU. Tudo 
 6. FPS médio com e sem overlay sem diferença perceptível: ok.
 
 Outros testes da validação final: cenário do `engine_demo` elevado com o jogo falso (aparece sozinho, some quando o jogo fecha), primeira execução (abre a janela, grava as configurações, cria a tarefa "Peek"), clique e menu da bandeja, arrastar a janela, atalho, "Iniciar com o Windows" remove/recria a tarefa, "Sair" encerra, desinstalador remove o app e a tarefa.
+
+## Detecção de jogo (2026-10-23)
+
+Build release da branch `feat/game-detection` (mesmo código da 0.2.0) instalado por cima da 0.1.0 com o instalador NSIS. O usuário testou a versão instalada e relatou que funcionou bem; os itens da lista de validação do PR #1 não foram registrados um a um.
+
+| Situação | RAM privada | CPU | Data |
+|---|---|---|---|
+| Configuração aberta (sensores e NVML ativos para a prévia) | 31,4 MB, 1 WebView2 | 0,33% | 2026-10-23 |
+| Configuração aberta → fechada, 15 s depois | 12,7 MB, 0 WebView2 | 0,02% | 2026-10-23 |
+
+Mesmo patamar da 0.1.0 (12,6 MB, 0% no mesmo cenário). Orçamento: oculto < 20 MB e ~0% CPU. Dentro.
