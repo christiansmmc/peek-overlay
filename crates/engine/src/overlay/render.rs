@@ -1,5 +1,6 @@
 //! Software Direct2D renderer for the overlay: a DC render target bound to a 32-bpp
-//! top-down premultiplied DIB, DirectWrite text. Never creates a D3D device.
+//! top-down premultiplied DIB, DirectWrite text. Creates no hardware/GPU D3D device;
+//! Direct2D's software target uses WARP internally.
 
 use std::cell::RefCell;
 use std::collections::HashMap;

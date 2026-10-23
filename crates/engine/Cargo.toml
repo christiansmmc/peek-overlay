@@ -41,7 +41,8 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
-# Only the fake_game example creates a D3D11 device; the library never does.
+# Only the fake_game example creates a hardware D3D11 device; the library creates none
+# (Direct2D's software render target uses WARP internally).
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
