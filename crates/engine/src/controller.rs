@@ -316,7 +316,7 @@ impl Controller {
     }
 
     pub fn set_overlay_visible(&self, visible: bool) {
-        self.inner().detector.set_visible(visible);
+        self.inner().detector.set_on(visible);
         self.sync();
     }
 
@@ -493,6 +493,7 @@ impl Controller {
                 hwnd: info.hwnd,
                 covers_monitor: info.covers_monitor,
                 ignored,
+                known_game: false,
             });
             g.last_fg = Some(info);
         }
