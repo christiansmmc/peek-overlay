@@ -193,12 +193,13 @@ JSON em `%APPDATA%\Peek\settings.json`, gravado a cada mudança (não existe bot
     - `get_state` devolve settings, status e disponibilidade;
     - `update_settings(parcial)`;
     - `set_overlay_visible(bool)`;
+    - `mark_not_game` e `mark_game` (sem argumentos; devolvem as configurações ou uma mensagem de erro, 4.6);
     - `begin_hotkey_capture` e `end_hotkey_capture`;
     - `try_set_hotkey(combo)` devolve ok ou conflito (com o app, se conhecido);
     - `install_driver`;
     - `window_minimize` e `window_close`.
   - host → página:
-    - `status` (overlay visível, nome do jogo ou null);
+    - `status` (`overlayVisible`: overlay ligado; `overlayWaiting`: ligado mas escondido até o jogo vir pra frente; nome do jogo ou null; `lastAppName`: último app ou null);
     - `metrics` (amostra a cada 500 ms, só com a configuração aberta);
     - `availability` (por métrica: ok, sem sensor com motivo, ou requer driver);
     - `driver` (missing, installing, failed ou installed).
