@@ -1,5 +1,7 @@
 //! Game rules (spec 4.6): exe paths, game library folders and the classification of the foreground app.
 
+use crate::process_info::is_ignored;
+use crate::settings::GameRules;
 use std::path::Path;
 use windows::Win32::Foundation::{ERROR_SUCCESS, WIN32_ERROR};
 use windows::Win32::System::Registry::{
@@ -67,6 +69,22 @@ impl LibraryRoots {
 pub fn is_library_path(path: &str, roots: &LibraryRoots) -> bool {
     LIBRARY_MARKERS.iter().any(|m| path.contains(m))
         || roots.roots.iter().any(|r| path.strip_prefix(r.as_str()).is_some_and(|rest| rest.starts_with('\\')))
+}
+
+/// What the foreground app is, before the sustained-activity heuristics weigh in.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct AppClass {
+    pub ignored: bool,
+    pub known_game: bool,
+}
+
+/// `exe_path` must already be normalized. Without a path only the name rules apply.
+/// The built-in ignore list (and this app) wins over the user's "games" list.
+pub fn classify(exe_name: &str, exe_path: Option<&str>, self_exe: &str, rules: &GameRules, roots: &LibraryRoots) -> AppClass {
+    let listed = |list: &[String]| exe_path.is_some_and(|p| list.iter().any(|l| l == p));
+    let ignored = is_ignored(exe_name, self_exe) || listed(&rules.not_games);
+    let known_game = !ignored && (listed(&rules.games) || exe_path.is_some_and(|p| is_library_path(p, roots)));
+    AppClass { ignored, known_game }
 }
 
 /// The non-empty `InstallLocation` of an Epic `.item` manifest.
@@ -189,6 +207,35 @@ fn epic_roots_skip_broken_manifests() {
     std::fs::write(dir.path().join("c.txt"), r#"{"InstallLocation":"D:\\Outro"}"#).unwrap();
     assert_eq!(epic_roots(dir.path()), vec![r"D:\Jogos\Hades".to_string()]);
     assert!(epic_roots(&dir.path().join("missing")).is_empty());
+}
+fn rules() -> GameRules {
+    GameRules {
+        games: vec![r"c:\tools\emu\emu.exe".into()],
+        not_games: vec![r"d:\steamlibrary\steamapps\common\tool\tool.exe".into()],
+    }
+}
+#[test]
+fn classify_by_name_lists_and_library() {
+    let roots = LibraryRoots::default();
+    let c = |name: &str, path: &str| classify(name, Some(path), "peek.exe", &rules(), &roots);
+    assert_eq!(c("hades.exe", r"d:\steamlibrary\steamapps\common\hades\hades.exe"), AppClass { ignored: false, known_game: true });
+    assert_eq!(c("emu.exe", r"c:\tools\emu\emu.exe"), AppClass { ignored: false, known_game: true });
+    assert_eq!(c("tool.exe", r"d:\steamlibrary\steamapps\common\tool\tool.exe"), AppClass { ignored: true, known_game: false });
+    assert_eq!(c("notepad.exe", r"c:\windows\notepad.exe"), AppClass::default());
+    assert_eq!(c("Peek.exe", r"c:\program files\peek\peek.exe"), AppClass { ignored: true, known_game: false });
+}
+#[test]
+fn builtin_ignore_wins_over_the_games_list() {
+    let discord = r"c:\users\me\appdata\local\discord\discord.exe";
+    let r = GameRules { games: vec![discord.into()], ..GameRules::default() };
+    assert_eq!(classify("Discord.exe", Some(discord), "peek.exe", &r, &LibraryRoots::default()),
+               AppClass { ignored: true, known_game: false });
+}
+#[test]
+fn classify_without_a_path_uses_only_the_name() {
+    let roots = LibraryRoots::new([r"d:\jogos".to_string()]);
+    assert_eq!(classify("witcher3.exe", None, "peek.exe", &rules(), &roots), AppClass::default());
+    assert!(classify("cmd.exe", None, "peek.exe", &rules(), &roots).ignored);
 }
 }
 
