@@ -17,6 +17,7 @@ use crate::frames::clock::now_ns;
 use crate::frames::etw::{CaptureError, FrameCapture, FrameShared};
 use crate::frames::stats::graph_y_max;
 use crate::game::{Fg, Game, GameDetector};
+use crate::game_rules::{AppClass, LibraryRoots, classify, normalize_path};
 use crate::hotkey::{self, HotkeyError};
 use crate::model::{
     AppState, Avail, Availability, DriverState, HotkeyResult, MetricsSample, REASON_NEEDS_ADMIN, Status,
@@ -62,6 +63,8 @@ struct Inner {
     game_name: Option<String>,
     /// Latest foreground window: fallback for the game's title once its window is gone.
     last_fg: Option<ForegroundInfo>,
+    /// Game library folders outside the launcher markers, read once by `start`.
+    libraries: LibraryRoots,
     /// Newest sample: refreshed by the graph timer and drawn first when the overlay shows.
     sample: MetricsSample,
     /// `start` ran: the native thread, the sensors and the frame capture exist.
@@ -161,7 +164,8 @@ impl Controller {
         sink: Arc<dyn UiSink>,
         self_exe: String,
     ) -> Arc<Controller> {
-        let detector = GameDetector::new(settings.general.auto_show);
+        let mut detector = GameDetector::new(settings.general.auto_show);
+        detector.set_hide_outside_game(settings.general.hide_outside_game);
         Arc::new_cyclic(|me| Controller {
             me: me.clone(),
             settings_path,
@@ -179,6 +183,7 @@ impl Controller {
                 config_open: false,
                 game_name: None,
                 last_fg: None,
+                libraries: LibraryRoots::default(),
                 sample: MetricsSample::default(),
                 started: false,
                 shut_down: false,
@@ -212,6 +217,9 @@ impl Controller {
         }
         let sensors = Sensors::new();
         let driver = if pawnio::is_installed() { DriverState::Installed } else { DriverState::Missing };
+        // Before the native thread: its first focus event is classified with the library folders.
+        let libraries = LibraryRoots::load();
+        self.inner().libraries = libraries;
         let me = self.me.clone();
         let native = Arc::new(NativeHandle::spawn(Box::new(move |event| {
             if let Some(c) = me.upgrade() {
@@ -298,6 +306,7 @@ impl Controller {
             next.shortcut = g.settings.shortcut.clone();
             settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
             g.detector.set_auto_show(next.general.auto_show);
+            g.detector.set_hide_outside_game(next.general.hide_outside_game);
             let startup_changed = next.general.startup != g.settings.general.startup;
             g.settings = next.clone();
             (next, startup_changed)
@@ -487,13 +496,13 @@ impl Controller {
             {
                 g.detector.on_process_exited(game.pid);
             }
-            let ignored = process_info::is_ignored(&info.exe_name, &self.self_exe);
+            let class = self.class_of(&g, &info);
             g.detector.on_foreground(Fg {
                 pid: info.pid,
                 hwnd: info.hwnd,
                 covers_monitor: info.covers_monitor,
-                ignored,
-                known_game: false,
+                ignored: class.ignored,
+                known_game: class.known_game,
             });
             g.last_fg = Some(info);
         }
@@ -667,8 +676,12 @@ impl Controller {
                 }
             }
 
-            // 7. Status.
-            let status = Status { overlay_visible: g.detector.visible(), game_name: g.game_name.clone() };
+            // 7. Status: the user's intent, and whether it waits for the game to come to the front.
+            let status = Status {
+                overlay_visible: g.detector.is_on(),
+                game_name: g.game_name.clone(),
+                overlay_waiting: g.detector.waiting(),
+            };
             if status != g.status {
                 events.push(("status", json(&status)));
                 g.status = status;
@@ -694,9 +707,15 @@ impl Controller {
         let fg = g.last_fg.as_ref()?;
         let watch = !fg.covers_monitor
             && g.detector.game().map(|game| game.pid) != Some(fg.pid)
-            && !process_info::is_ignored(&fg.exe_name, &self.self_exe)
+            && !self.class_of(g, fg).ignored
             && foreground::is_window_alive(fg.hwnd);
         watch.then_some((fg.pid, fg.hwnd))
+    }
+
+    /// Ignore lists, the user's game rules and the library folders, applied to a foreground window.
+    fn class_of(&self, g: &Inner, info: &ForegroundInfo) -> AppClass {
+        let path = info.exe_path.as_deref().map(|p| normalize_path(&p.to_string_lossy()));
+        classify(&info.exe_name, path.as_deref(), &self.self_exe, &g.settings.game_rules, &g.libraries)
     }
 
     /// Points the frame tracker at the new game (or none), names it and replaces the exit watch.
@@ -793,9 +812,10 @@ mod tests {
         c.toggle_overlay();
         c.set_overlay_visible(true);
         c.set_overlay_visible(false);
+        // "Hide outside the game" is on by default: with no game, the overlay waits.
         assert_eq!(log.payloads("status"), vec![
-            serde_json::json!({"overlayVisible": true, "gameName": null}),
-            serde_json::json!({"overlayVisible": false, "gameName": null}),
+            serde_json::json!({"overlayVisible": true, "gameName": null, "overlayWaiting": true}),
+            serde_json::json!({"overlayVisible": false, "gameName": null, "overlayWaiting": false}),
         ]);
     }
 
@@ -852,9 +872,41 @@ mod tests {
         unsafe { DestroyWindow(windows::Win32::Foundation::HWND(hwnd as *mut _)).unwrap() };
     }
 
+    /// This executable, as `focus` reports it and `exe_path(pid)` reads it for this process.
+    fn me() -> String {
+        normalize_path(&std::env::current_exe().unwrap().to_string_lossy())
+    }
+
     fn focus(c: &Controller, hwnd: isize, pid: u32, covers_monitor: bool) {
-        let info = ForegroundInfo { hwnd, pid, exe_name: "game.exe".into(), title: "Jogo Teste".into(), covers_monitor };
+        focus_as(c, hwnd, pid, &std::env::current_exe().unwrap().to_string_lossy(), covers_monitor);
+    }
+
+    /// `focus`, reporting `exe_path` as the window's executable.
+    fn focus_as(c: &Controller, hwnd: isize, pid: u32, exe_path: &str, covers_monitor: bool) {
+        let info = ForegroundInfo {
+            hwnd,
+            pid,
+            exe_name: "game.exe".into(),
+            exe_path: Some(PathBuf::from(exe_path)),
+            title: "Jogo Teste".into(),
+            covers_monitor,
+        };
         c.on_native_event(NativeEvent::Foreground(info));
+    }
+
+    /// The `"status"` events as `{overlayVisible, gameName}`, without consecutive repeats nor the
+    /// initial hidden state: fields added to `Status` leave these assertions alone.
+    fn shown(log: &Log) -> Vec<serde_json::Value> {
+        let mut last = serde_json::json!({"overlayVisible": false, "gameName": null});
+        let mut out = Vec::new();
+        for p in log.payloads("status") {
+            let v = serde_json::json!({"overlayVisible": p["overlayVisible"], "gameName": p["gameName"]});
+            if v != last {
+                out.push(v.clone());
+                last = v;
+            }
+        }
+        out
     }
 
     /// 2.1 s of steady presents by `pid` up to now, then a detect tick.
@@ -870,9 +922,9 @@ mod tests {
     fn detect_game(c: &Controller, log: &Log) -> isize {
         let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
         focus(c, hwnd, std::process::id(), true);
-        assert!(log.payloads("status").is_empty(), "a candidate is not a game yet");
+        assert!(shown(log).is_empty(), "a candidate is not a game yet");
         present_and_tick(c, std::process::id());
-        assert_eq!(log.payloads("status"), vec![serde_json::json!({"overlayVisible": true, "gameName": "Jogo Teste"})]);
+        assert_eq!(shown(log), vec![serde_json::json!({"overlayVisible": true, "gameName": "Jogo Teste"})]);
         hwnd
     }
 
@@ -884,9 +936,9 @@ mod tests {
 
         // Its window is gone (no exit watch here): the next focus change ends the detection.
         destroy(hwnd);
-        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), title: String::new(), covers_monitor: false };
+        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), exe_path: None, title: String::new(), covers_monitor: false };
         c.on_native_event(NativeEvent::Foreground(other));
-        assert_eq!(log.payloads("status").last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": null})));
+        assert_eq!(shown(&log).last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": null})));
         assert_eq!(c.frames.target(), None);
     }
 
@@ -897,7 +949,7 @@ mod tests {
         let old = detect_game(&c, &log);
         c.toggle_overlay();
         let hidden = serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"});
-        assert_eq!(log.payloads("status").last(), Some(&hidden));
+        assert_eq!(shown(&log).last(), Some(&hidden));
 
         // The game replaces its window: same process, new handle, the old one is dead.
         destroy(old);
@@ -905,8 +957,8 @@ mod tests {
         focus(&c, new, pid, true);
         present_and_tick(&c, pid);
         assert_eq!(c.inner().detector.game().map(|g| (g.pid, g.hwnd)), Some((pid, new)));
-        assert_eq!(log.payloads("status").last(), Some(&hidden), "the hotkey hide still holds");
-        assert_eq!(log.payloads("status").len(), 2);
+        assert_eq!(shown(&log).last(), Some(&hidden), "the hotkey hide still holds");
+        assert_eq!(shown(&log).len(), 2);
         destroy(new);
     }
 
@@ -919,11 +971,66 @@ mod tests {
         // window is not taken as the end of the game.
         c.inner().exit_watch = watch_exit(pid, Box::new(|| {}));
         destroy(hwnd);
-        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), title: String::new(), covers_monitor: false };
+        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), exe_path: None, title: String::new(), covers_monitor: false };
         c.on_native_event(NativeEvent::Foreground(other));
         assert_eq!(c.inner().detector.game().map(|g| g.pid), Some(pid));
-        assert_eq!(log.payloads("status").last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"})));
+        assert_eq!(shown(&log).last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"})));
         drop(c.inner().exit_watch.take());
+    }
+
+    #[test]
+    fn windowed_app_with_the_overlay_on_is_not_detected() {
+        let (c, _log, _dir) = controller(Settings::default());
+        let pid = std::process::id();
+        c.toggle_overlay();
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, pid, false);
+        assert_eq!(c.inner().detector.candidate_pid(), None);
+        present_and_tick(&c, pid);
+        assert_eq!(c.inner().detector.game(), None);
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn steam_game_in_a_window_is_detected_and_auto_shown() {
+        let (c, log, _dir) = controller(Settings::default());
+        let pid = std::process::id();
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus_as(&c, hwnd, pid, r"D:\SteamLibrary\steamapps\common\Hades\Hades.exe", false);
+        present_and_tick(&c, pid);
+        assert_eq!(shown(&log), vec![serde_json::json!({"overlayVisible": true, "gameName": "Jogo Teste"})]);
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn not_games_list_blocks_a_fullscreen_window() {
+        let rules = crate::settings::GameRules { not_games: vec![me()], ..Default::default() };
+        let (c, _log, _dir) = controller(Settings { game_rules: rules, ..Settings::default() });
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, std::process::id(), true);
+        assert_eq!(c.inner().detector.candidate_pid(), None);
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn hide_outside_game_waits_and_pauses_outside_the_game() {
+        let (c, log, _dir) = controller(Settings::default());
+        let pid = std::process::id();
+        let last = || log.payloads("status").last().cloned().unwrap();
+        c.toggle_overlay();
+        assert_eq!((last()["overlayVisible"].clone(), last()["overlayWaiting"].clone()), (true.into(), true.into()));
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, pid, true);
+        present_and_tick(&c, pid);
+        assert_eq!(last()["overlayWaiting"], false);
+        let other = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "notepad.exe".into(), exe_path: None, title: String::new(), covers_monitor: false };
+        c.on_native_event(NativeEvent::Foreground(other));
+        assert_eq!(last()["overlayWaiting"], true);
+        assert_eq!(c.inner().plan(), Effects::default(), "hidden outside the game: nothing runs");
+        c.update_settings(serde_json::json!({"general": {"hideOutsideGame": false}})).unwrap();
+        assert_eq!(last()["overlayWaiting"], false);
+        assert!(c.inner().detector.visible());
+        destroy(hwnd);
     }
 
     /// Moves and sizes `hwnd` to exactly cover the monitor it is on.
