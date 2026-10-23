@@ -6,7 +6,7 @@ mod tray;
 use std::sync::Arc;
 
 use overlay_engine::controller::Controller;
-use overlay_engine::settings::{load, settings_path, LoadOutcome};
+use overlay_engine::settings::{load_or_create, settings_path, LoadOutcome};
 use tauri::{Manager, RunEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -26,7 +26,9 @@ pub fn run() {
         ])
         .setup(|app| {
             let path = settings_path();
-            let (settings, outcome) = load(&path);
+            // A first run (no settings file) opens the window and writes the defaults, so only
+            // the very first launch does so when "Abrir minimizado" is on (spec 4.1).
+            let (settings, outcome) = load_or_create(&path);
             let open_config = outcome == LoadOutcome::Missing || !settings.general.minimized;
             let sink = Arc::new(sink::TauriSink(app.handle().clone()));
             let controller = Controller::new(settings, path, sink);

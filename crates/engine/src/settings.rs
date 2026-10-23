@@ -129,6 +129,18 @@ pub fn load(path: &Path) -> (Settings, LoadOutcome) {
     }
 }
 
+/// `load` for a launch of the app. A missing file is the first run: the defaults are written
+/// right away, so the next launch is no longer one even if nothing was changed (spec 4.1).
+pub fn load_or_create(path: &Path) -> (Settings, LoadOutcome) {
+    let (settings, outcome) = load(path);
+    if outcome == LoadOutcome::Missing
+        && let Err(e) = save(path, &settings)
+    {
+        crate::trace!("settings: writing the defaults failed: {e}");
+    }
+    (settings, outcome)
+}
+
 pub fn save(path: &Path, s: &Settings) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
@@ -204,6 +216,18 @@ mod tests {
         assert_eq!(o, LoadOutcome::Loaded);
         assert_eq!((s.style, s.size, s.opacity), (Style::Line, 200, 30));
         assert_eq!(s.metrics, Metrics::default());
+    }
+    #[test]
+    fn first_launch_writes_the_defaults_so_only_it_counts_as_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("Peek").join("settings.json");
+        assert_eq!(load_or_create(&p), (Settings::default(), LoadOutcome::Missing));
+        assert_eq!(load(&p), (Settings::default(), LoadOutcome::Loaded), "defaults saved on the first launch");
+        assert_eq!(load_or_create(&p), (Settings::default(), LoadOutcome::Loaded));
+        // A corrupt file falls back to the defaults but is left alone.
+        std::fs::write(&p, "{not json").unwrap();
+        assert_eq!(load_or_create(&p), (Settings::default(), LoadOutcome::Corrupt));
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "{not json");
     }
     #[test]
     fn save_creates_dir_and_roundtrips() {
