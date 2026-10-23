@@ -1,6 +1,6 @@
 # Peek
 
-Overlay de desempenho pra Windows 11. Fica na bandeja do sistema e, quando um jogo entra em tela cheia ou em janela sem borda, mostra por cima dele um painel pequeno com FPS, gráfico de frametime, uso e temperatura da GPU e uso e temperatura da CPU. Não injeta DLL, não faz hook de DirectX e não lê a memória do jogo: o FPS vem de eventos ETW do sistema, o uso de GPU e CPU vem de contadores do Windows (PDH), a temperatura da GPU do D3DKMT e a da CPU do driver PawnIO (opcional).
+Overlay de desempenho pra Windows 11. Fica na bandeja do sistema e, quando um jogo entra em tela cheia ou em janela sem borda, mostra por cima dele um painel pequeno com FPS, gráfico de frametime, uso e temperatura da GPU e uso e temperatura da CPU. Não injeta DLL, não faz hook de DirectX e não lê a memória do jogo: o FPS vem de eventos ETW do sistema, o uso de CPU vem de contadores do Windows (PDH), o de GPU vem do driver da NVIDIA (NVML, o mesmo número do overlay da Steam e do MSI Afterburner) nas placas NVIDIA e do PDH nas outras (o número do Gerenciador de Tarefas), a temperatura da GPU do D3DKMT e a da CPU do driver PawnIO (opcional).
 
 A spec está em `docs/superpowers/specs/2026-10-22-perf-overlay-design.md`. Os nomes internos (crates `overlay-engine` e `perf-overlay`) não mudaram.
 
