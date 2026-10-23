@@ -6,6 +6,7 @@ const ROWS: [keyof General, string][] = [
   ['startup', 'Iniciar com o Windows'],
   ['minimized', 'Abrir minimizado na bandeja'],
   ['autoShow', 'Mostrar overlay sozinho ao abrir um jogo'],
+  ['hideOutsideGame', 'Esconder fora do jogo'],
 ];
 
 interface Props {
@@ -13,7 +14,7 @@ interface Props {
   onToggle(k: keyof General): void;
 }
 
-/** "Geral": three switches; the whole row is clickable. */
+/** "Geral": four switches; the whole row is clickable. */
 export function GeneralToggles({ general, onToggle }: Props) {
   return (
     <div class="general">

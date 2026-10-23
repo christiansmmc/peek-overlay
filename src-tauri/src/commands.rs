@@ -23,6 +23,16 @@ pub fn set_overlay_visible(ctl: Ctl, visible: bool) {
 }
 
 #[tauri::command]
+pub fn mark_not_game(ctl: Ctl) -> Result<Settings, String> {
+    ctl.mark_not_game()
+}
+
+#[tauri::command]
+pub fn mark_game(ctl: Ctl) -> Result<Settings, String> {
+    ctl.mark_game()
+}
+
+#[tauri::command]
 pub fn begin_hotkey_capture(ctl: Ctl) {
     ctl.begin_hotkey_capture();
 }

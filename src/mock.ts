@@ -2,7 +2,7 @@
 // example values the preview shows while no game is detected (the prototype's `tick()`).
 //
 // URL states: ?driver=missing|failed|installed, ?igpu=1 (GPU temp. without sensor), ?nogame=1,
-// ?hotkeyError=1, ?installFails=1.
+// ?waiting=1 (no game, overlay on and waiting for it), ?hotkeyError=1, ?installFails=1.
 import type { Api } from './ipc';
 import type { AppState, Events, MetricsSample, Settings } from './types';
 
@@ -14,7 +14,8 @@ const DEFAULT_SETTINGS: Settings = {
   size: 100,
   opacity: 80,
   shortcut: ['Ctrl', 'Shift', 'O'],
-  general: { startup: true, minimized: true, autoShow: true },
+  general: { startup: true, minimized: true, autoShow: true, hideOutsideGame: true },
+  gameRules: { games: [], notGames: [] },
 };
 
 // Same texts as crates/engine/src/model.rs and hotkey.rs.
@@ -82,10 +83,16 @@ const snap = (v: number, min: number, max: number) => Math.max(min, Math.min(max
 
 export function createMock(q: URLSearchParams): Api {
   const driverParam = q.get('driver');
+  const waiting = q.get('waiting') === '1';
   const st: AppState = {
     settings: structuredClone(DEFAULT_SETTINGS),
     // Visible, so the screen matches the prototype's initial "Overlay ativo".
-    status: { overlayVisible: true, gameName: q.get('nogame') === '1' ? null : 'The Witcher 3' },
+    status: {
+      overlayVisible: true,
+      overlayWaiting: false,
+      gameName: q.get('nogame') === '1' || waiting ? null : 'The Witcher 3',
+      lastAppName: 'Hollow Knight',
+    },
     availability: {
       fps: { state: 'ok' },
       gpuUse: { state: 'ok' },
@@ -97,6 +104,7 @@ export function createMock(q: URLSearchParams): Api {
     hotkeyError: q.get('hotkeyError') === '1' ? 'Ctrl + Shift + O já é usado por outro app. Escolha outra.' : null,
   };
   const installFails = q.get('installFails') === '1';
+  st.status.overlayWaiting = waitingNow();
 
   const listeners: { [K in keyof Events]: Set<(p: Events[K]) => void> } = {
     status: new Set(),
@@ -108,6 +116,20 @@ export function createMock(q: URLSearchParams): Api {
   const emit = <K extends keyof Events>(e: K, p: Events[K]) => {
     for (const cb of listeners[e]) cb(structuredClone(p));
   };
+
+  // The mock pretends the detected game is in front, so the overlay only waits when there is none.
+  function waitingNow() {
+    return st.status.overlayVisible && st.settings.general.hideOutsideGame && st.status.gameName == null;
+  }
+  const refreshWaiting = () => {
+    const overlayWaiting = waitingNow();
+    if (overlayWaiting === st.status.overlayWaiting) return;
+    st.status = { ...st.status, overlayWaiting };
+    emit('status', st.status);
+  };
+  // Fake path for the rules lists, which hold paths in the real engine.
+  const fakePath = (name: string) => `C:\\Games\\${name}.exe`;
+  const without = (list: string[], path: string) => list.filter((p) => p !== path);
 
   // Like the controller's sample timer: the game's values while one is detected, sensors only otherwise.
   let sample = exampleSample();
@@ -128,12 +150,41 @@ export function createMock(q: URLSearchParams): Api {
         shortcut: st.settings.shortcut,
       };
       emit('settings', st.settings);
+      refreshWaiting();
       return structuredClone(st.settings);
     },
     async setOverlayVisible(visible) {
       if (st.status.overlayVisible === visible) return;
       st.status = { ...st.status, overlayVisible: visible };
+      st.status.overlayWaiting = waitingNow();
       emit('status', st.status);
+    },
+    async markNotGame() {
+      const name = st.status.gameName;
+      if (name == null) throw 'Nenhum jogo detectado.';
+      const path = fakePath(name);
+      const { games, notGames } = st.settings.gameRules;
+      st.settings = { ...st.settings, gameRules: { games: without(games, path), notGames: [...without(notGames, path), path] } };
+      st.status = { ...st.status, lastAppName: name, gameName: null };
+      st.status.overlayWaiting = waitingNow();
+      emit('settings', st.settings);
+      emit('status', st.status);
+      return structuredClone(st.settings);
+    },
+    async markGame() {
+      const name = st.status.lastAppName;
+      if (name == null) throw 'Nenhum app para marcar.';
+      const path = fakePath(name);
+      const { games, notGames } = st.settings.gameRules;
+      st.settings = { ...st.settings, gameRules: { games: [...without(games, path), path], notGames: without(notGames, path) } };
+      emit('settings', st.settings);
+      // Detection takes a moment to pick the app up, like the controller's poll.
+      setTimeout(() => {
+        st.status = { ...st.status, gameName: name };
+        st.status.overlayWaiting = waitingNow();
+        emit('status', st.status);
+      }, 2000);
+      return structuredClone(st.settings);
     },
     async beginHotkeyCapture() {},
     async endHotkeyCapture() {},

@@ -121,7 +121,12 @@ export function App() {
     <div class="app">
       <TitleBar />
       <div class="panel">
-        <StatusRow status={status} shortcut={settings.shortcut} onToggle={() => api.setOverlayVisible(!status.overlayVisible)} />
+        <StatusRow
+          status={status}
+          onToggle={() => api.setOverlayVisible(!status.overlayVisible)}
+          onMarkNotGame={() => api.markNotGame().catch((e) => console.error('mark_not_game failed:', e))}
+          onMarkGame={() => api.markGame().catch((e) => console.error('mark_game failed:', e))}
+        />
         <Preview
           settings={settings}
           availability={st.availability}
