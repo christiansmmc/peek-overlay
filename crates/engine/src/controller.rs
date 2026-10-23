@@ -321,19 +321,16 @@ impl Controller {
             let mut g = self.inner();
             let mut next = settings::apply_patch(&g.settings, patch)?;
             next.shortcut = g.settings.shortcut.clone();
-            settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
+            let startup_changed = next.general.startup != g.settings.general.startup;
+            let next = self.adopt_settings(&mut g, next)?;
             g.detector.set_auto_show(next.general.auto_show);
             g.detector.set_hide_outside_game(next.general.hide_outside_game);
-            let startup_changed = next.general.startup != g.settings.general.startup;
-            g.settings = next.clone();
             (next, startup_changed)
         };
         if startup_changed {
             self.startup.request(settings.general.startup);
         }
-        self.sync();
-        self.emit("settings", &settings);
-        Ok(settings)
+        Ok(self.publish_settings(settings))
     }
 
     /// "Não é jogo": saves the detected game's executable on `notGames` and ends the game as if it
@@ -346,14 +343,11 @@ impl Controller {
             let path = g.game_path.clone().ok_or("Caminho do jogo indisponível.")?;
             let mut next = g.settings.clone();
             next.game_rules.mark_not_game(&path);
-            settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
-            g.settings = next.clone();
+            let next = self.adopt_settings(&mut g, next)?;
             g.detector.on_process_exited(pid);
             next
         };
-        self.sync();
-        self.emit("settings", &settings);
-        Ok(settings)
+        Ok(self.publish_settings(settings))
     }
 
     /// "Marcar como jogo": saves the last app's executable on `games` and, while its window is
@@ -366,17 +360,14 @@ impl Controller {
             };
             let mut next = g.settings.clone();
             next.game_rules.mark_game(&path);
-            settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
-            g.settings = next.clone();
+            let next = self.adopt_settings(&mut g, next)?;
             // A closed window would only keep ETW running until its candidacy is given up.
             if foreground::is_window_alive(hwnd) {
                 g.detector.nominate(pid, hwnd);
             }
             next
         };
-        self.sync();
-        self.emit("settings", &settings);
-        Ok(settings)
+        Ok(self.publish_settings(settings))
     }
 
     pub fn toggle_overlay(&self) {
@@ -487,6 +478,21 @@ impl Controller {
 
     fn emit<T: Serialize>(&self, event: &str, payload: &T) {
         self.sink.emit(event, json(payload));
+    }
+
+    /// Saves `next`, then makes it the current settings: a failed save changes nothing.
+    fn adopt_settings(&self, g: &mut Inner, next: Settings) -> Result<Settings, String> {
+        settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
+        g.settings = next.clone();
+        Ok(next)
+    }
+
+    /// Brings everything in line with settings just adopted, then sends them to the UI. Never
+    /// call it holding `inner`.
+    fn publish_settings(&self, settings: Settings) -> Settings {
+        self.sync();
+        self.emit("settings", &settings);
+        settings
     }
 
     /// Registers `combo` as the global hotkey (no-op without a native thread). Never call it
