@@ -76,11 +76,18 @@ impl GameDetector {
     }
 
     /// The user marks this window as a game: it is watched even in the background and with the
-    /// overlay off, until it is confirmed, given up or exits. Replaces the previous nominee.
+    /// overlay off, until it is confirmed, given up or exits. Replaces the previous nominee;
+    /// ignored for the detected game.
     pub fn nominate(&mut self, pid: u32, hwnd: isize) {
+        if self.game.is_some_and(|g| g.pid == pid) {
+            return;
+        }
         self.nominee = Some(Game { pid, hwnd });
-        // An explicit user action, like showing the overlay: a timed-out window gets a new chance.
-        self.given_up = None;
+        // This window gets a new chance if it timed out. Not another one: a re-armed focused
+        // window would outrank the nominee.
+        if self.given_up == Some((pid, hwnd)) {
+            self.given_up = None;
+        }
         self.refresh_candidate();
     }
 
@@ -112,7 +119,7 @@ impl GameDetector {
     /// A presenting check of the candidate (each detect tick): `continuous_ms` is how long `pid`
     /// has presented without a gap, `now_ms` a monotonic clock. A confirmed candidate becomes the
     /// game and is shown by "auto show" only while it is in the foreground: a nominee confirmed in
-    /// the background waits for the focus.
+    /// the background waits for the focus, and hides an overlay "auto show" drew over another game.
     pub fn on_presenting(&mut self, pid: u32, continuous_ms: u64, now_ms: u64) {
         let Some(c) = self.candidate else { return };
         if c.pid != pid {
@@ -138,12 +145,12 @@ impl GameDetector {
         if self.nominee.is_some_and(|n| n.pid == pid) {
             self.nominee = None;
         }
-        if self.fg.as_ref().is_some_and(|f| f.pid == pid)
-            && self.auto_show
-            && self.mode == Mode::Hidden
-            && self.suppressed != Some(pid)
-        {
-            self.mode = Mode::Auto;
+        if self.fg.as_ref().is_some_and(|f| f.pid == pid) {
+            if self.mode == Mode::Hidden && self.auto_show && self.suppressed != Some(pid) {
+                self.mode = Mode::Auto;
+            }
+        } else if self.mode == Mode::Auto {
+            self.mode = Mode::Hidden;
         }
         self.refresh_candidate();
     }
@@ -458,6 +465,53 @@ fn nominee_that_exits_is_dropped() {
     d.nominate(3, 30);
     d.on_process_exited(3);
     assert_eq!(d.candidate_pid(), None);
+}
+#[test]
+fn game_confirmed_in_the_background_drops_the_auto_overlay() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, CONFIRM_MS, 0);
+    assert!(d.visible());
+    d.nominate(3, 30);
+    d.on_presenting(3, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(3));
+    assert!(!d.visible(), "the new game is not in front");
+    d.on_foreground(kg(3));
+    assert!(d.visible());
+}
+#[test]
+fn nominating_the_detected_game_is_ignored() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, CONFIRM_MS, 0);
+    d.nominate(1, 10);
+    assert_eq!(d.candidate_pid(), None);
+    d.on_foreground(fg(2, true));
+    d.on_presenting(2, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(2));
+    assert_eq!(d.candidate_pid(), None, "no lingering nominee comes back");
+}
+#[test]
+fn nominating_another_window_leaves_a_given_up_focused_window_given_up() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, 0, 0);
+    d.on_presenting(1, 0, GIVE_UP_MS);
+    d.nominate(3, 30);
+    assert_eq!(d.candidate_pid(), Some(3), "the timed-out window does not outrank the nominee");
+}
+#[test]
+fn nominating_the_given_up_window_re_arms_it() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, 0, 0);
+    d.on_presenting(1, 0, GIVE_UP_MS);
+    assert_eq!(d.candidate_pid(), None);
+    d.nominate(1, 10);
+    assert_eq!(d.candidate_pid(), Some(1));
+    d.on_presenting(1, CONFIRM_MS, GIVE_UP_MS + 3_000);
+    assert_eq!(gpid(&d), Some(1));
+    assert!(d.visible());
 }
 
     fn hide_and_confirm_tests_helper() -> GameDetector {
