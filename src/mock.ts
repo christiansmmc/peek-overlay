@@ -104,7 +104,8 @@ export function createMock(q: URLSearchParams): Api {
     hotkeyError: q.get('hotkeyError') === '1' ? 'Ctrl + Shift + O já é usado por outro app. Escolha outra.' : null,
   };
   const installFails = q.get('installFails') === '1';
-  st.status.overlayWaiting = waitingNow();
+  // Only ?waiting=1 starts waiting; later changes recompute it (waitingNow).
+  st.status.overlayWaiting = waiting;
 
   const listeners: { [K in keyof Events]: Set<(p: Events[K]) => void> } = {
     status: new Set(),
