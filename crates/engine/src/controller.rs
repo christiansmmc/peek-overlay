@@ -51,6 +51,8 @@ struct Inner {
     availability: Availability,
     driver: DriverState,
     hotkey_error: Option<String>,
+    /// The settings page is capturing a new shortcut, with the saved one unregistered.
+    capturing: bool,
     detector: GameDetector,
     config_open: bool,
     /// Display name of the detected game.
@@ -164,6 +166,7 @@ impl Controller {
                 availability: Availability::all_ok(),
                 driver: DriverState::Missing,
                 hotkey_error: None,
+                capturing: false,
                 detector,
                 config_open: false,
                 game_name: None,
@@ -308,18 +311,29 @@ impl Controller {
 
     /// While the page captures a new shortcut, the current one must not be consumed by the system.
     pub fn begin_hotkey_capture(&self) {
+        self.inner().capturing = true;
         self.send(NativeCmd::UnregisterHotkey);
     }
 
     /// Registers the saved shortcut again (the new one after a successful `try_set_hotkey`).
+    /// Idempotent.
     pub fn end_hotkey_capture(&self) {
-        let combo = self.inner().settings.shortcut.clone();
+        let combo = {
+            let mut g = self.inner();
+            g.capturing = false;
+            g.settings.shortcut.clone()
+        };
         let registered = self.register(&combo);
         self.inner().hotkey_error = startup_hotkey_error(&combo, &registered);
     }
 
+    /// Ends the capture too: whatever the outcome, a shortcut is registered on return.
     pub fn try_set_hotkey(&self, combo: Vec<String>) -> HotkeyResult {
-        let old = self.inner().settings.shortcut.clone();
+        let old = {
+            let mut g = self.inner();
+            g.capturing = false;
+            g.settings.shortcut.clone()
+        };
         let attempt = hotkey::parse(&combo).and_then(|hk| match hotkey::known_conflict(&combo) {
             Some(app) => Err(HotkeyError::KnownConflict { app }),
             None => self.native().map_or(Ok(()), |native| native.register_hotkey(hk)),
@@ -362,8 +376,17 @@ impl Controller {
         }
     }
 
+    /// Closing the window mid-capture (Alt+F4: no blur, no IPC) ends the capture, or the app
+    /// would stay without its shortcut until restarted.
     pub fn set_config_open(&self, open: bool) {
-        self.inner().config_open = open;
+        let abandoned_capture = {
+            let mut g = self.inner();
+            g.config_open = open;
+            !open && g.capturing
+        };
+        if abandoned_capture {
+            self.end_hotkey_capture();
+        }
         self.sync();
     }
 
@@ -903,6 +926,39 @@ mod tests {
         assert_eq!(c.inner().sent_watch, None, "a window covering its monitor is no longer watched");
         c.shutdown();
         destroy(hwnd);
+    }
+
+    #[test]
+    fn closing_the_config_window_mid_capture_registers_the_shortcut_again() {
+        let combo = s(&["Ctrl", "Alt", "Shift", "F7"]);
+        let hk = hotkey::parse(&combo).unwrap();
+        let (c, _log, _dir) = controller(Settings { shortcut: combo, ..Settings::default() });
+        c.start();
+        assert_eq!(c.state().hotkey_error, None);
+        c.set_config_open(true);
+        c.begin_hotkey_capture();
+        // The capture released the shortcut: another window can take it.
+        let probe = NativeHandle::spawn(Box::new(|_| {}));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while probe.register_hotkey(hk).is_err() {
+            assert!(std::time::Instant::now() < deadline, "the capture did not release the shortcut");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        probe.quit();
+
+        // Alt+F4 mid-capture: the window is destroyed with no blur and no end_hotkey_capture.
+        c.set_config_open(false);
+        let probe = NativeHandle::spawn(Box::new(|_| {}));
+        assert_eq!(probe.register_hotkey(hk), Err(HotkeyError::InUse), "the shortcut is registered again");
+        probe.quit();
+        assert_eq!(c.state().hotkey_error, None);
+
+        // A capture that ended through try_set_hotkey leaves nothing to restore.
+        c.set_config_open(true);
+        c.begin_hotkey_capture();
+        assert!(c.try_set_hotkey(s(&["Ctrl", "Alt", "Shift", "F6"])).ok);
+        assert!(!c.inner().capturing);
+        c.shutdown();
     }
 
     #[test]
