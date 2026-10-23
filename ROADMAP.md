@@ -22,7 +22,6 @@ Peek runs elevated. `PawnIOLib.dll` and NVIDIA's `nvml.dll` are already loaded b
 
 ## Later / known small issues
 
-- **Game detected in a window never upgrades to the fullscreen path.** If a game is first confirmed while windowed (overlay shown by hotkey) and then goes fullscreen, auto-show won't apply to it until it's restarted. See `crates/engine/src/game.rs`.
 - **First frame after showing the overlay** shows "—" for GPU/CPU usage for ~0.5 s (PDH needs two collects).
 - **Optimus laptops:** polling NVML while the settings window is open may keep a sleeping dGPU awake. Untested — no laptop available.
 - **Overlay hide latency while ETW stops:** when `sync()` runs on the native thread, `FrameCapture::stop()` can delay the queued hide by a few ms. Measure on a slower machine before changing the ordering.
