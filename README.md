@@ -19,7 +19,7 @@
 
 The game starts to stutter and you want to know *why*: is it the GPU, the CPU, or just the frame pacing? Press **Ctrl + Shift + O** and Peek drops a small panel over the game with FPS, a frametime graph, and GPU / CPU usage and temperatures. Press it again and it's gone.
 
-It lives in the tray, starts with Windows, and stays out of the way. When a game takes over the screen it can show itself; when you Alt+Tab away it hides; and the hotkey always wins.
+It lives in the tray, starts with Windows, and stays out of the way. When a game takes over the screen it can show itself; when you Alt+Tab away it hides; and the hotkey wins over the automation: hide it in a game and it stays hidden until that game closes.
 
 No DLL injection. No DirectX hooks. No reading game memory. Everything comes from what Windows and the drivers already publish.
 
@@ -45,7 +45,9 @@ Personal project, used on Windows 11 x64 with an AMD Ryzen 7 5800X and an NVIDIA
 
 **CPU temperature, optional.** Reading it needs the signed [PawnIO](https://pawnio.eu/) driver. If it isn't there, the *CPU temp.* pill says *requer driver*; one click installs the official package through `winget`.
 
-**Knows when you're playing.** A window that covers its monitor and keeps presenting frames for ~2 s becomes *the game*: its name shows in the settings, the overlay can appear by itself, and FPS follows that process. Browsers and the shell are ignored. Everything is event-driven — focus changes, window moves, process exit — not polling.
+**Knows when you're playing.** A fullscreen or borderless window, or a program from a game library folder (Steam, Epic, GOG, Xbox, EA, Ubisoft) or from your own list, becomes *the game* once it keeps presenting frames for ~2 s: its name shows in the settings, the overlay can appear by itself, and FPS follows that process. Browsers, terminals, chat apps, editors and launchers are ignored. Everything is event-driven — focus changes, window moves, process exit — not polling.
+
+**Hide outside the game.** With *Esconder fora do jogo* on (the default), an overlay you turned on by hand shows over the game or any fullscreen / known-game window in front, so the hotkey still works in games Peek can't confirm, such as Vulkan and OpenGL ones (FPS shows "—" there). Everywhere else — the desktop, browsers, terminals, chat, editors — it waits hidden (*Overlay ativo · aguardando jogo*), and ETW and the sensors stop until a game is back in front.
 
 **Light when idle.** Hidden, Peek is a tray icon and a sleeping thread: ~10 MB and 0 % CPU, no timers, no ETW session. The settings window is created when you open it and destroyed when you close it, taking its WebView2 processes with it.
 
@@ -111,7 +113,7 @@ cargo test --workspace
 npm test
 ```
 
-The debug build runs without elevation, so the things that need it (FPS, CPU temperature) show as unavailable there. The mock accepts URL states for the UI's edge cases: `?driver=missing|failed|installed`, `?igpu=1`, `?nogame=1`, `?hotkeyError=1`, `?installFails=1`.
+The debug build runs without elevation, so the things that need it (FPS, CPU temperature) show as unavailable there. The mock accepts URL states for the UI's edge cases: `?driver=missing|failed|installed`, `?igpu=1`, `?nogame=1`, `?waiting=1`, `?hotkeyError=1`, `?installFails=1`.
 
 ## Why administrator
 
@@ -121,7 +123,7 @@ The real-time ETW session that delivers present events (the FPS) and the PawnIO 
 
 - **Exclusive fullscreen** can't be overlaid by a separate window. Most DX11/DX12 games on Windows 11 run in a mode that allows it; if one doesn't, use borderless.
 - **FPS needs DXGI or D3D9.** Vulkan and OpenGL games show "—" for now.
-- **Game detection is a heuristic.** An unusual fullscreen app might be taken for a game.
+- **Game detection is a heuristic.** A program counts as a game if it is not on the built-in ignore list and it is fullscreen or borderless, sits in a game library folder, or is one you marked. An unusual fullscreen app might still be taken for a game, and a windowed game outside those folders (Battle.net isn't covered, and an Epic or GOG game installed in a custom folder after Peek started is only seen after a restart) isn't recognized. Fix either case in the settings: *não é jogo* on the detected game, or *marcar como jogo* on the last app you used. Your choices are saved as full exe paths in `gameRules` (`games` / `notGames`) in `settings.json`; to clear them, edit that file with Peek closed (*Sair* in the tray menu), since Peek reads it only at start and rewrites it on every change. *Esconder fora do jogo* keeps the overlay off the desktop and other windowed apps.
 
 What's planned next — Vulkan/OpenGL FPS, signed installers, and a list of known small issues — is in [ROADMAP.md](ROADMAP.md).
 

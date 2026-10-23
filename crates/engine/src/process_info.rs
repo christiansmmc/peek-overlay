@@ -9,7 +9,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{PCWSTR, PWSTR};
 
-const IGNORED: [&str; 15] = [
+const IGNORED: &[&str] = &[
     "explorer.exe",
     "dwm.exe",
     "shellexperiencehost.exe",
@@ -25,6 +25,41 @@ const IGNORED: [&str; 15] = [
     "brave.exe",
     "vivaldi.exe",
     "msedgewebview2.exe",
+    "windowsterminal.exe",
+    "openconsole.exe",
+    "conhost.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "discord.exe",
+    "slack.exe",
+    "ms-teams.exe",
+    "teams.exe",
+    "code.exe",
+    "cursor.exe",
+    "zed.exe",
+    "spotify.exe",
+    "steam.exe",
+    "steamwebhelper.exe",
+    "epicgameslauncher.exe",
+    // Lives under \epic games\, so the library marker would call it a game.
+    "epicwebhelper.exe",
+    "eadesktop.exe",
+    "battle.net.exe",
+    "galaxyclient.exe",
+    "ubisoftconnect.exe",
+    // The Ubisoft Connect window, not a game.
+    "upc.exe",
+    "obs64.exe",
+    "nvidia app.exe",
+    "nvidia overlay.exe",
+    "overwolf.exe",
+    "claude.exe",
+    "taskmgr.exe",
+    "systemsettings.exe",
+    // Wallpaper Engine lives under \steamapps\common\, which the library marker would call a game.
+    "wallpaper32.exe",
+    "wallpaper64.exe",
 ];
 
 pub fn is_ignored(exe_name: &str, self_exe: &str) -> bool {
@@ -98,7 +133,9 @@ use super::*;
 #[test]
 fn ignores_shell_browsers_and_self() {
     for exe in ["explorer.exe", "DWM.EXE", "msedge.exe", "chrome.exe", "firefox.exe", "brave.exe",
-                "opera.exe", "vivaldi.exe", "msedgewebview2.exe", "Perf-Overlay.exe"] {
+                "opera.exe", "vivaldi.exe", "msedgewebview2.exe", "Perf-Overlay.exe", "WindowsTerminal.exe",
+                "OpenConsole.exe", "Discord.exe", "Code.exe", "steamwebhelper.exe", "EpicWebHelper.exe",
+                "NVIDIA Overlay.exe", "wallpaper64.exe"] {
         assert!(is_ignored(exe, "perf-overlay.exe"), "{exe}");
     }
     assert!(!is_ignored("witcher3.exe", "perf-overlay.exe"));

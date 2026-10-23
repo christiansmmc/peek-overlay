@@ -13,6 +13,8 @@ export interface Api {
   endHotkeyCapture(): Promise<void>;
   trySetHotkey(combo: string[]): Promise<HotkeyResult>;
   installDriver(): Promise<void>;
+  markNotGame(): Promise<Settings>;
+  markGame(): Promise<Settings>;
   minimize(): Promise<void>;
   close(): Promise<void>;
   on<K extends keyof Events>(e: K, cb: (p: Events[K]) => void): Promise<() => void>;
@@ -27,6 +29,8 @@ function tauriApi(): Api {
     endHotkeyCapture: () => invoke<void>('end_hotkey_capture'),
     trySetHotkey: (combo) => invoke<HotkeyResult>('try_set_hotkey', { combo }),
     installDriver: () => invoke<void>('install_driver'),
+    markNotGame: () => invoke<Settings>('mark_not_game'),
+    markGame: () => invoke<Settings>('mark_game'),
     minimize: () => getCurrentWindow().minimize(),
     // Destroys the window and its WebView (spec 4.3); the app stays in the tray.
     close: () => getCurrentWindow().close(),

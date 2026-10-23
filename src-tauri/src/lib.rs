@@ -19,6 +19,8 @@ pub fn run() {
             commands::get_state,
             commands::update_settings,
             commands::set_overlay_visible,
+            commands::mark_not_game,
+            commands::mark_game,
             commands::begin_hotkey_capture,
             commands::end_hotkey_capture,
             commands::try_set_hotkey,

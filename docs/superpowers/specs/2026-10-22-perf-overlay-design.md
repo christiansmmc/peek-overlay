@@ -83,8 +83,10 @@ Diferenças entre o protótipo e o app real:
 - **Barra de tarefas:** a janela de configuração tem botão na barra de tarefas enquanto está aberta (decisão minha).
 - **Durante a captura do atalho**, o host desregistra o atalho atual. Senão o próprio atalho é consumido pelo sistema e nunca chega na página. Ao fim da captura, registra o novo; se cancelar, re-registra o antigo.
 - **Barra de progresso da instalação do driver:** pode ser indeterminada, porque o winget não reporta progresso de forma confiável.
-- **Chip de status:** clicar nele alterna o overlay de verdade.
-- **Jogo detectado:** mostra o nome do jogo atual (4.6).
+- **Chip de status:** clicar nele alterna o overlay de verdade. Ganha o estado **"Overlay ativo · aguardando jogo"**: overlay ligado, mas escondido até o jogo ou uma janela de jogo vir pra frente ("Esconder fora do jogo", 4.6).
+- **Linha de status do jogo:** perde o texto do atalho (ele já está no campo "Atalho") e ganha os links de correção, numa linha só. Com jogo detectado: "Jogo detectado" + o nome (4.6) + o link "não é jogo". Sem jogo: "Nenhum jogo · último app" + o último app em primeiro plano que não está na lista embutida de ignorados + o link "marcar como jogo". Sem nenhum dos dois: "Nenhum jogo detectado". A janela de configuração do Peek nunca conta como "último app".
+- **Geral ganha o switch "Esconder fora do jogo"** (4.6). Pra o quarto switch caber em 480×680 sem rolagem, o gap do painel cai de 14 px pra 12 px e as linhas de Geral, de 30 px pra 26 px.
+- **Estado do mock:** `?waiting=1` (sem jogo, overlay aguardando) se soma aos estados de URL já existentes.
 
 ### 4.4 Métricas: de onde vêm
 
@@ -97,7 +99,7 @@ Diferenças entre o protótipo e o app real:
 | CPU uso | PDH `\Processor Information(_Total)\% Processor Utility`, limitado a 100 | Deve bater com o Gerenciador de Tarefas. |
 | CPU temp. | Driver PawnIO (4.5): AMD Zen via módulo AMDFamily17 (registrador SMN de temperatura, Tctl), Intel via módulo IntelMSR (`IA32_PACKAGE_THERM_STATUS` + TjMax de `MSR_TEMPERATURE_TARGET`) | O LibreHardwareMonitor é a referência de como ler cada família. **AMD Zen é obrigatório** (máquina do usuário: Ryzen 7 5800X, sem offset de Tctl); Intel moderno também deve funcionar. CPU fora dessas famílias fica como "sem sensor". |
 
-- **Sensores sob demanda:** a sessão ETW e a leitura de sensores só rodam com o overlay visível, com a tela de configuração aberta, ou quando a detecção de jogo precisa confirmar um candidato (4.6). Com o overlay oculto e a configuração fechada, o app fica parado, esperando eventos, sem nenhum polling.
+- **Sensores sob demanda:** a sessão ETW e a leitura de sensores só rodam com o overlay visível (desenhado: ligado mas aguardando o jogo, 4.6, não conta), com a tela de configuração aberta, ou quando a detecção de jogo precisa confirmar um candidato (4.6). Com o overlay oculto e a configuração fechada, o app fica parado, esperando eventos, sem nenhum polling.
 - **Métrica desligada não é coletada.**
 
 ### 4.5 Driver PawnIO (temperatura da CPU)
@@ -113,27 +115,40 @@ Diferenças entre o protótipo e o app real:
 
 Esta seção inteira é decisão minha.
 
-**Processos ignorados:** do sistema (explorer, dwm etc.), navegadores (Edge, Chrome, Firefox, Opera, Brave etc.) e o próprio app.
+**Processos ignorados** (nunca viram candidatos): o próprio app e a lista embutida em `crates/engine/src/process_info.rs` (`IGNORED`, num único lugar, testada): shell do sistema, navegadores, terminais (Windows Terminal, conhost, cmd, PowerShell), chat (Discord, Slack, Teams), editores (VS Code, Cursor, Zed), Spotify, launchers (Steam, Epic, EA, Battle.net, GOG Galaxy, Ubisoft Connect), OBS, NVIDIA App e overlay, Overwolf, Claude, Gerenciador de Tarefas, Configurações, Wallpaper Engine. A lista embutida vence a lista "É jogo" do usuário. Um caminho na lista "Não é jogo" do usuário também é ignorado. Sem o caminho do exe legível, valem só as regras por nome (tela cheia continua contando).
 
-**Como um processo vira "o jogo detectado"** (dois caminhos):
+**Como um processo vira "o jogo detectado".** A janela em primeiro plano vira candidata só se **não for ignorada** E (**cobrir o monitor** OU **for um jogo conhecido**) E (**"mostrar sozinho" ligado OU overlay ligado**). Os caminhos:
 
-1. **Tela cheia:** a janela em primeiro plano ocupa o monitor inteiro (tela cheia ou janela sem borda) e apresenta quadros via ETW de forma contínua por ~2 s. Esse é o único caminho que dispara o "mostrar sozinho".
-2. **Com o overlay visível:** qualquer processo não ignorado em primeiro plano que apresente quadros de forma contínua por ~2 s, mesmo em janela que não ocupa a tela. Isso cobre jogos em modo janela.
+- **A. Tela cheia:** a janela ocupa o monitor inteiro (tela cheia ou janela sem borda).
+- **B. Biblioteca:** o exe fica numa pasta de biblioteca de jogos (abaixo), mesmo em janela comum.
+- **C. "É jogo":** o exe está na lista "É jogo" do usuário, mesmo em janela comum.
 
-**Quanto tempo dura:** o jogo continua detectado até o processo **fechar** ou outro jogo ser confirmado. Perder o foco **não** desfaz a detecção. Assim, abrir a configuração por cima do jogo continua mostrando "Jogo detectado" e valores reais na prévia. O fim do processo é detectado por evento (espera no handle do processo), sem polling.
+O candidato é confirmado quando apresenta quadros via ETW de forma contínua por ~2 s. Um candidato sem sequência de confirmação por 10 s é abandonado até um novo evento de foco ou de posição da janela. Os três caminhos disparam o "mostrar sozinho" (com a opção ligada), e ele exige o jogo em primeiro plano. O caminho antigo "qualquer janela com o overlay visível" foi **removido**: era a causa de apps comuns, como o Windows Terminal, serem tomados por jogo.
+
+**Pastas de biblioteca (caminho B).** O caminho completo do exe, normalizado, é comparado por pasta inteira com os marcadores `\steamapps\common\`, `\epic games\`, `\gog galaxy\games\`, `\xboxgames\`, `\ea games\` e `\ubisoft game launcher\games\` (em `crates/engine/src/game_rules.rs`), além das pastas de instalação da Epic, lidas dos manifestos `.item` do launcher (`%ProgramData%\Epic\EpicGamesLauncher\Data\Manifests`), e da GOG, lidas do registro (`HKLM\SOFTWARE\WOW6432Node\GOG.com\Games\*\path`). Epic e GOG são lidas uma vez, quando o Peek inicia: um jogo instalado depois numa pasta personalizada só é reconhecido após reiniciar o Peek. A Battle.net não é coberta.
+
+**Listas do usuário.** `gameRules.games` ("É jogo") e `gameRules.notGames` ("Não é jogo") guardam o caminho completo do exe (4.7), nunca nas duas ao mesmo tempo. Editar o JSON com o Peek fechado (Sair na bandeja) é o único jeito de limpá-las: as configurações só são lidas ao iniciar, e o arquivo inteiro é regravado a cada mudança.
+
+- **"não é jogo"** (link na linha de status, 4.3): o caminho do exe do jogo detectado vai para `notGames`, o jogo termina como se tivesse fechado e nunca mais é candidato.
+- **"marcar como jogo"**: o caminho do último app vai para `games` (e sai de `notGames`). Se a janela dele ainda estiver aberta, ele é nomeado candidato e confirmado em segundo plano em ~2 s, e o overlay aparece quando ele vier pra frente. O último app é o último em primeiro plano que não está na lista embutida de ignorados; a janela de configuração do Peek nunca conta (o hook de foco ignora as janelas do próprio app).
+- As duas ações salvam o `settings.json` na hora. Comandos do host: `mark_not_game` e `mark_game`, sem argumentos, devolvem as configurações ou uma mensagem de erro.
+
+**Quanto tempo dura:** o jogo continua detectado até o processo **fechar**, outro jogo ser confirmado ou o usuário clicar em "não é jogo". Perder o foco **não** desfaz a detecção. Assim, abrir a configuração por cima do jogo continua mostrando "Jogo detectado" e valores reais na prévia. O fim do processo é detectado por evento (espera no handle do processo), sem polling.
 
 **De onde vêm o FPS e o frametime:** sempre do jogo detectado. Sem jogo detectado, mostram "—".
 
 **Nome exibido:** o `FileDescription` do executável; se não existir, o título da janela; se não existir, o nome do .exe.
 
 **"Mostrar overlay sozinho" ligado** (padrão do handoff):
-- O overlay aparece quando o jogo detectado (caminho 1) está em primeiro plano.
+- O overlay aparece quando o jogo detectado (qualquer dos caminhos A, B ou C) está em primeiro plano.
 - Some quando o jogo perde o foco e volta quando ele recupera o foco (Alt+Tab ida e volta).
 - Se o usuário escondeu o overlay pelo atalho, ele não reaparece sozinho até o processo do jogo fechar ou outro jogo ser detectado. Alt+Tab não conta como "mudar de jogo". O atalho manda mais que a automação.
 
-**Overlay ligado pelo atalho:** continua visível independente do foco. Enquanto o jogo detectado estiver rodando, mostra as métricas dele.
+**Overlay ligado pelo atalho:** enquanto o jogo detectado estiver rodando, mostra as métricas dele. Com "Esconder fora do jogo" desligado, continua visível independente do foco.
 
-**Quando a sessão ETW roda:** com o overlay visível, com a configuração aberta, ou enquanto um candidato está sendo confirmado. Fora isso, fica parada. Voltar o foco pro jogo é um evento de foco e não precisa de ETW.
+**"Esconder fora do jogo"** (`general.hideOutsideGame`, padrão ligado; switch em Geral): com ela ligada, um overlay ligado pelo atalho, pelo chip ou pela bandeja só é desenhado enquanto está em primeiro plano o jogo detectado **ou qualquer janela em tela cheia ou de jogo conhecido** (não ignorada e reconhecida pelo caminho A, B ou C), confirmada ou não. Assim o atalho continua valendo nos jogos que o Peek não consegue confirmar, porque a confirmação depende de quadros DXGI ou D3D9 na ETW: Vulkan, OpenGL e jogos que apresentam por um processo filho (com FPS "—"). Nesse caso o overlay se ancora nessa janela, não num jogo detectado em segundo plano. No desktop, em navegadores, terminais, chat, editores e outras janelas comuns, o overlay fica ligado mas escondido, esperando, e o chip de status mostra "Overlay ativo · aguardando jogo". Enquanto espera, a ETW e os sensores param. O "mostrar sozinho" não muda: continua exigindo o jogo confirmado em primeiro plano. No contrato de status, `overlayVisible` significa overlay **ligado** (intenção), `overlayWaiting` significa ligado mas escondido até o jogo (ou uma janela de jogo) vir pra frente, e `lastAppName` traz o último app (4.3).
+
+**Quando a sessão ETW roda:** com o overlay visível (desenhado; aguardando jogo não conta), com a configuração aberta, ou enquanto um candidato está sendo confirmado. Fora isso, fica parada. Voltar o foco pro jogo é um evento de foco e não precisa de ETW.
 
 ### 4.7 Configurações salvas
 
@@ -148,12 +163,14 @@ JSON em `%APPDATA%\Peek\settings.json`, gravado a cada mudança (não existe bot
   "size": 100,
   "opacity": 80,
   "shortcut": ["Ctrl", "Shift", "O"],
-  "general": { "startup": true, "minimized": true, "autoShow": true }
+  "general": { "startup": true, "minimized": true, "autoShow": true, "hideOutsideGame": true },
+  "gameRules": { "games": [], "notGames": [] }
 }
 ```
 
 - **Padrões:** os do handoff, mostrados acima.
 - **Arquivo ausente ou corrompido:** o app volta aos padrões e não trava.
+- **`gameRules`:** listas do usuário (4.6), com o caminho completo do exe normalizado (minúsculas, `\`). Um caminho nunca fica nas duas listas; se um arquivo editado à mão repetir um caminho, ele fica em `games`.
 - **`cpuTemp` ligado sem driver:** se o driver sumir, a métrica é tratada como desligada e a pílula volta a "requer driver".
 
 ## 5. Arquitetura (decidida)
@@ -176,12 +193,13 @@ JSON em `%APPDATA%\Peek\settings.json`, gravado a cada mudança (não existe bot
     - `get_state` devolve settings, status e disponibilidade;
     - `update_settings(parcial)`;
     - `set_overlay_visible(bool)`;
+    - `mark_not_game` e `mark_game` (sem argumentos; devolvem as configurações ou uma mensagem de erro, 4.6);
     - `begin_hotkey_capture` e `end_hotkey_capture`;
     - `try_set_hotkey(combo)` devolve ok ou conflito (com o app, se conhecido);
     - `install_driver`;
     - `window_minimize` e `window_close`.
   - host → página:
-    - `status` (overlay visível, nome do jogo ou null);
+    - `status` (`overlayVisible`: overlay ligado; `overlayWaiting`: ligado mas escondido até o jogo vir pra frente; nome do jogo ou null; `lastAppName`: último app ou null);
     - `metrics` (amostra a cada 500 ms, só com a configuração aberta);
     - `availability` (por métrica: ok, sem sensor com motivo, ou requer driver);
     - `driver` (missing, installing, failed ou installed).

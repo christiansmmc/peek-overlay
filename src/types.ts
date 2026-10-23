@@ -2,8 +2,8 @@
 export type Style = 'line' | 'card';
 export type Pos = 'tl' | 'tc' | 'tr' | 'ml' | 'mr' | 'bl' | 'bc' | 'br';
 export interface Metrics { fps: boolean; graph: boolean; gpuUse: boolean; gpuTemp: boolean; cpuUse: boolean; cpuTemp: boolean }
-export interface Settings { version: number; metrics: Metrics; style: Style; pos: Pos; size: number; opacity: number; shortcut: string[]; general: { startup: boolean; minimized: boolean; autoShow: boolean } }
-export interface Status { overlayVisible: boolean; gameName: string | null }
+export interface Settings { version: number; metrics: Metrics; style: Style; pos: Pos; size: number; opacity: number; shortcut: string[]; general: { startup: boolean; minimized: boolean; autoShow: boolean; hideOutsideGame: boolean }; gameRules: { games: string[]; notGames: string[] } }
+export interface Status { overlayVisible: boolean; overlayWaiting: boolean; gameName: string | null; lastAppName: string | null }
 export type Avail = { state: 'ok' } | { state: 'noSensor'; reason: string };
 export interface Availability { fps: Avail; gpuUse: Avail; gpuTemp: Avail; cpuUse: Avail; cpuTemp: Avail }
 export type DriverState = 'missing' | 'installing' | 'failed' | 'installed';

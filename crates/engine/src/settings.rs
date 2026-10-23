@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::game_rules::normalize_path;
 use crate::hotkey;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,11 +48,57 @@ pub struct General {
     pub startup: bool,
     pub minimized: bool,
     pub auto_show: bool,
+    pub hide_outside_game: bool,
 }
 
 impl Default for General {
     fn default() -> Self {
-        Self { startup: true, minimized: true, auto_show: true }
+        Self { startup: true, minimized: true, auto_show: true, hide_outside_game: true }
+    }
+}
+
+/// The user's own game lists: full exe paths, normalized. A path is never in both lists.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct GameRules {
+    pub games: Vec<String>,
+    pub not_games: Vec<String>,
+}
+
+fn dedup_normalized(list: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for path in list {
+        let path = normalize_path(&path);
+        if !path.is_empty() && !out.contains(&path) {
+            out.push(path);
+        }
+    }
+    out
+}
+
+impl GameRules {
+    /// Normalizes every item, drops empties and duplicates; a path in both lists stays in `games`.
+    pub fn normalized(self) -> GameRules {
+        let games = dedup_normalized(self.games);
+        let mut not_games = dedup_normalized(self.not_games);
+        not_games.retain(|p| !games.contains(p));
+        GameRules { games, not_games }
+    }
+
+    pub fn mark_game(&mut self, path: &str) {
+        Self::mark(&mut self.games, &mut self.not_games, path);
+    }
+
+    pub fn mark_not_game(&mut self, path: &str) {
+        Self::mark(&mut self.not_games, &mut self.games, path);
+    }
+
+    fn mark(into: &mut Vec<String>, from: &mut Vec<String>, path: &str) {
+        let path = normalize_path(path);
+        from.retain(|p| *p != path);
+        if !into.contains(&path) {
+            into.push(path);
+        }
     }
 }
 
@@ -66,6 +113,7 @@ pub struct Settings {
     pub opacity: u32,
     pub shortcut: Vec<String>,
     pub general: General,
+    pub game_rules: GameRules,
 }
 
 fn default_shortcut() -> Vec<String> {
@@ -83,6 +131,7 @@ impl Default for Settings {
             opacity: 80,
             shortcut: default_shortcut(),
             general: General::default(),
+            game_rules: GameRules::default(),
         }
     }
 }
@@ -99,6 +148,7 @@ impl Settings {
         if hotkey::parse(&self.shortcut).is_err() {
             self.shortcut = default_shortcut();
         }
+        self.game_rules = self.game_rules.normalized();
         self
     }
 }
@@ -187,8 +237,39 @@ mod tests {
             "metrics": {"fps": true, "graph": true, "gpuUse": true, "gpuTemp": true, "cpuUse": true, "cpuTemp": false},
             "style": "card", "pos": "tr", "size": 100, "opacity": 80,
             "shortcut": ["Ctrl", "Shift", "O"],
-            "general": {"startup": true, "minimized": true, "autoShow": true}
+            "general": {"startup": true, "minimized": true, "autoShow": true, "hideOutsideGame": true},
+            "gameRules": {"games": [], "notGames": []}
         }));
+    }
+    #[test]
+    fn old_settings_file_gets_the_new_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, r#"{"general":{"startup":false}}"#).unwrap();
+        let (s, _) = load(&p);
+        assert!(!s.general.startup && s.general.hide_outside_game);
+        assert_eq!(s.game_rules, GameRules::default());
+    }
+    #[test]
+    fn game_rules_are_normalized_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("settings.json");
+        std::fs::write(&p, r#"{"gameRules":{
+            "games":[" C:/Games/Foo/Foo.exe","c:\\games\\foo\\foo.exe",""],
+            "notGames":["C:\\Games\\Foo\\FOO.exe","D:/Bar/bar.exe"]}}"#).unwrap();
+        let (s, o) = load(&p);
+        assert_eq!(o, LoadOutcome::Loaded);
+        assert_eq!(s.game_rules.games, vec![r"c:\games\foo\foo.exe".to_string()]);
+        assert_eq!(s.game_rules.not_games, vec![r"d:\bar\bar.exe".to_string()]);
+    }
+    #[test]
+    fn marking_moves_a_path_between_the_lists() {
+        let mut r = GameRules::default();
+        r.mark_not_game(r"C:\Games\Foo\Foo.exe");
+        r.mark_not_game(r"c:\games\foo\foo.exe");
+        assert_eq!(r, GameRules { games: vec![], not_games: vec![r"c:\games\foo\foo.exe".into()] });
+        r.mark_game("C:/Games/Foo/Foo.exe");
+        assert_eq!(r, GameRules { games: vec![r"c:\games\foo\foo.exe".into()], not_games: vec![] });
     }
     #[test]
     fn normalize_clamps_and_snaps_to_step_5() {

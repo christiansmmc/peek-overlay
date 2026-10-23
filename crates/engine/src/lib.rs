@@ -3,6 +3,7 @@ pub mod controller;
 pub mod effects;
 pub mod frames;
 pub mod game;
+pub mod game_rules;
 pub mod hotkey;
 pub mod model;
 pub mod native;

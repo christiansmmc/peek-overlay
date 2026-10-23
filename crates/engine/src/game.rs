@@ -5,14 +5,8 @@
 pub const CONFIRM_MS: u64 = 2000;
 /// A candidate without a confirming streak for this long is given up, so ETW and the detect
 /// timer can stop (an RDP or VM client, a paused fullscreen player). A foreground or location
-/// event for its window, or showing the overlay, re-arms it.
+/// event for its window, showing the overlay or a nomination re-arms it.
 pub const GIVE_UP_MS: u64 = 10_000;
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DetectPath {
-    Fullscreen,
-    Windowed,
-}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fg {
@@ -20,13 +14,14 @@ pub struct Fg {
     pub hwnd: isize,
     pub covers_monitor: bool,
     pub ignored: bool,
+    /// On the user's game list or in a game library folder.
+    pub known_game: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Game {
     pub pid: u32,
     pub hwnd: isize,
-    pub path: DetectPath,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -39,12 +34,17 @@ enum Mode {
 pub struct GameDetector {
     mode: Mode,
     auto_show: bool,
+    /// Draw a manual overlay only while the detected game, or a window that looks like a game, is
+    /// in the foreground.
+    hide_outside_game: bool,
     fg: Option<Fg>,
     candidate: Option<Game>,
     /// `now_ms` of the candidate's first presenting check.
     candidate_since: Option<u64>,
-    /// Window (pid, hwnd) whose candidacy timed out: not nominated again until re-armed.
+    /// Window (pid, hwnd) whose candidacy timed out: not a candidate again until re-armed.
     given_up: Option<(u32, isize)>,
+    /// Window the user marked as a game: the candidate whenever the focus gives none.
+    nominee: Option<Game>,
     game: Option<Game>,
     suppressed: Option<u32>,
 }
@@ -54,10 +54,12 @@ impl GameDetector {
         Self {
             mode: Mode::Hidden,
             auto_show,
+            hide_outside_game: false,
             fg: None,
             candidate: None,
             candidate_since: None,
             given_up: None,
+            nominee: None,
             game: None,
             suppressed: None,
         }
@@ -68,6 +70,26 @@ impl GameDetector {
         if let Some(fg) = self.fg.clone() {
             self.focus(fg);
         }
+    }
+
+    pub fn set_hide_outside_game(&mut self, on: bool) {
+        self.hide_outside_game = on;
+    }
+
+    /// The user marks this window as a game: it is watched even in the background and with the
+    /// overlay off, until it is confirmed, given up or exits. Replaces the previous nominee;
+    /// ignored for the detected game.
+    pub fn nominate(&mut self, pid: u32, hwnd: isize) {
+        if self.game.is_some_and(|g| g.pid == pid) {
+            return;
+        }
+        self.nominee = Some(Game { pid, hwnd });
+        // This window gets a new chance if it timed out. Not another one: a re-armed focused
+        // window would outrank the nominee.
+        if self.given_up == Some((pid, hwnd)) {
+            self.given_up = None;
+        }
+        self.refresh_candidate();
     }
 
     /// A foreground change, or the focused window starting or stopping covering its monitor.
@@ -82,14 +104,7 @@ impl GameDetector {
         match &mut self.game {
             Some(g) if g.pid == fg.pid => {
                 g.hwnd = fg.hwnd;
-                let g = *g;
-                if self.mode == Mode::Hidden
-                    && self.auto_show
-                    && g.path == DetectPath::Fullscreen
-                    && self.suppressed != Some(g.pid)
-                {
-                    self.mode = Mode::Auto;
-                }
+                self.auto_show_game(fg.pid);
             }
             _ => {
                 if self.mode == Mode::Auto {
@@ -101,7 +116,9 @@ impl GameDetector {
     }
 
     /// A presenting check of the candidate (each detect tick): `continuous_ms` is how long `pid`
-    /// has presented without a gap, `now_ms` a monotonic clock.
+    /// has presented without a gap, `now_ms` a monotonic clock. A confirmed candidate becomes the
+    /// game and is shown by "auto show" only while it is in the foreground: a nominee confirmed in
+    /// the background waits for the focus, and hides an overlay "auto show" drew over another game.
     pub fn on_presenting(&mut self, pid: u32, continuous_ms: u64, now_ms: u64) {
         let Some(c) = self.candidate else { return };
         if c.pid != pid {
@@ -112,7 +129,11 @@ impl GameDetector {
             // Only the time spent not presenting counts: a streak under way may still confirm.
             if now_ms.saturating_sub(since).saturating_sub(continuous_ms) >= GIVE_UP_MS {
                 self.given_up = Some((c.pid, c.hwnd));
-                self.set_candidate(None);
+                // Dropped, or the next foreground event (which clears `given_up`) would revive it.
+                if self.nominee == Some(c) {
+                    self.nominee = None;
+                }
+                self.refresh_candidate();
             }
             return;
         }
@@ -120,53 +141,102 @@ impl GameDetector {
             self.suppressed = None;
         }
         self.game = Some(c);
-        self.set_candidate(None);
-        if c.path == DetectPath::Fullscreen
-            && self.auto_show
-            && self.mode == Mode::Hidden
-            && self.suppressed != Some(pid)
-        {
-            self.mode = Mode::Auto;
+        if self.nominee.is_some_and(|n| n.pid == pid) {
+            self.nominee = None;
         }
-    }
-
-    pub fn on_process_exited(&mut self, pid: u32) {
-        if self.game.map(|g| g.pid) != Some(pid) {
-            return;
-        }
-        self.game = None;
-        self.suppressed = None;
         if self.fg.as_ref().is_some_and(|f| f.pid == pid) {
-            self.fg = None;
-        }
-        if self.mode == Mode::Auto {
+            self.auto_show_game(pid);
+        } else if self.mode == Mode::Auto {
             self.mode = Mode::Hidden;
         }
         self.refresh_candidate();
     }
 
-    pub fn toggle(&mut self) {
-        self.set_visible(!self.visible());
+    /// The detected game `pid` is in the foreground: "auto show" draws the overlay, unless the
+    /// user hid it over this game.
+    fn auto_show_game(&mut self, pid: u32) {
+        if self.mode == Mode::Hidden && self.auto_show && self.suppressed != Some(pid) {
+            self.mode = Mode::Auto;
+        }
     }
 
-    pub fn set_visible(&mut self, v: bool) {
-        if v == self.visible() {
+    /// Ends the game or drops the nominee whose process this was.
+    pub fn on_process_exited(&mut self, pid: u32) {
+        let nominee = self.nominee.is_some_and(|n| n.pid == pid);
+        if nominee {
+            self.nominee = None;
+        }
+        let game = self.game.is_some_and(|g| g.pid == pid);
+        if game {
+            self.game = None;
+            self.suppressed = None;
+            if self.fg.as_ref().is_some_and(|f| f.pid == pid) {
+                self.fg = None;
+            }
+            if self.mode == Mode::Auto {
+                self.mode = Mode::Hidden;
+            }
+        }
+        if nominee || game {
+            self.refresh_candidate();
+        }
+    }
+
+    pub fn toggle(&mut self) {
+        self.set_on(!self.is_on());
+    }
+
+    /// The user's intent (hotkey, chip, tray). What is drawn is `visible()`.
+    pub fn set_on(&mut self, on: bool) {
+        if on == self.is_on() {
             return;
         }
-        if v {
+        if on {
             self.mode = Mode::Manual;
             // The user asks for this window's metrics: a timed-out candidate gets another chance.
             self.given_up = None;
             self.refresh_candidate();
         } else {
-            self.suppressed = self.game.map(|g| g.pid).or(self.suppressed);
+            // Turning off an overlay that was waiting, never drawn, leaves "auto show" alone.
+            if self.visible() {
+                self.suppressed = self.game.map(|g| g.pid).or(self.suppressed);
+            }
             self.mode = Mode::Hidden;
             self.refresh_candidate();
         }
     }
 
-    pub fn visible(&self) -> bool {
+    /// On by the user or by "auto show".
+    pub fn is_on(&self) -> bool {
         self.mode != Mode::Hidden
+    }
+
+    /// Whether the overlay is drawn: with "hide outside the game", a manual overlay only over the
+    /// game in the foreground or a focused window that looks like one (Vulkan, OpenGL and games
+    /// presenting from a child process are never confirmed).
+    pub fn visible(&self) -> bool {
+        match self.mode {
+            Mode::Hidden => false,
+            Mode::Auto => true,
+            Mode::Manual => {
+                !self.hide_outside_game || self.game_in_front() || self.fg_looks_like_a_game()
+            }
+        }
+    }
+
+    /// On but not drawn, waiting for the game to come to the foreground.
+    pub fn waiting(&self) -> bool {
+        self.is_on() && !self.visible()
+    }
+
+    fn game_in_front(&self) -> bool {
+        self.game.is_some_and(|g| self.fg.as_ref().is_some_and(|f| f.pid == g.pid))
+    }
+
+    /// The focused window covers its monitor or is a known game, and is not ignored: a candidate's
+    /// shape, confirmed or not.
+    fn fg_looks_like_a_game(&self) -> bool {
+        self.fg.as_ref().is_some_and(|f| !f.ignored && (f.covers_monitor || f.known_game))
     }
 
     pub fn game(&self) -> Option<Game> {
@@ -177,28 +247,32 @@ impl GameDetector {
         self.candidate.map(|c| c.pid)
     }
 
+    /// The detected game's window, else the focused one. A manual overlay drawn by "hide outside
+    /// the game" over a game-like window that is not the detected game follows that window.
     pub fn anchor_hwnd(&self) -> Option<isize> {
-        self.game.map(|g| g.hwnd).or(self.fg.as_ref().map(|f| f.hwnd))
+        let focused = self.fg.as_ref().map(|f| f.hwnd);
+        if self.hide_outside_game && !self.game_in_front() && self.fg_looks_like_a_game() {
+            return focused;
+        }
+        self.game.map(|g| g.hwnd).or(focused)
     }
 
+    /// The focused window when it covers its monitor or is a known game, while "auto show" or the
+    /// overlay is on; else the nominee. Any other focused window is not watched, overlay on or not.
     fn refresh_candidate(&mut self) {
-        let visible = self.visible();
-        let next = self.fg.as_ref().and_then(|fg| {
-            // The detected game is never re-nominated: returning focus to it is a focus event.
-            let path = if fg.ignored
-                || self.game.is_some_and(|g| g.pid == fg.pid)
-                || self.given_up == Some((fg.pid, fg.hwnd))
-            {
-                return None;
-            } else if fg.covers_monitor && (self.auto_show || visible) {
-                DetectPath::Fullscreen
-            } else if visible {
-                DetectPath::Windowed
-            } else {
-                return None;
-            };
-            Some(Game { pid: fg.pid, hwnd: fg.hwnd, path })
+        let game = self.game.map(|g| g.pid);
+        let watching = self.auto_show || self.is_on();
+        let focused = self.fg.as_ref().filter(|fg| {
+            // The detected game is never a candidate again: returning focus to it is a focus event.
+            !fg.ignored
+                && game != Some(fg.pid)
+                && self.given_up != Some((fg.pid, fg.hwnd))
+                && (fg.covers_monitor || fg.known_game)
+                && watching
         });
+        let next = focused
+            .map(|fg| Game { pid: fg.pid, hwnd: fg.hwnd })
+            .or(self.nominee.filter(|n| game != Some(n.pid)));
         self.set_candidate(next);
     }
 
@@ -214,7 +288,9 @@ impl GameDetector {
 #[cfg(test)]
 mod tests {
 use super::*;
-fn fg(pid: u32, full: bool) -> Fg { Fg { pid, hwnd: pid as isize * 10, covers_monitor: full, ignored: false } }
+fn fg(pid: u32, full: bool) -> Fg { Fg { pid, hwnd: pid as isize * 10, covers_monitor: full, ignored: false, known_game: false } }
+fn kg(pid: u32) -> Fg { Fg { known_game: true, ..fg(pid, false) } }
+fn peek() -> Fg { Fg { ignored: true, ..fg(7, false) } }
 fn gpid(d: &GameDetector) -> Option<u32> { d.game().map(|g| g.pid) }
 
 #[test]
@@ -234,17 +310,6 @@ fn ignored_process_is_never_candidate() {
     let mut d = GameDetector::new(true);
     d.on_foreground(Fg { ignored: true, ..fg(2, true) });
     assert_eq!(d.candidate_pid(), None);
-}
-#[test]
-fn windowed_process_is_candidate_only_while_visible() {
-    let mut d = GameDetector::new(true);
-    d.on_foreground(fg(3, false));
-    assert_eq!(d.candidate_pid(), None);
-    d.toggle();
-    assert_eq!(d.candidate_pid(), Some(3));
-    d.on_presenting(3, CONFIRM_MS, 0);
-    assert_eq!(d.game().unwrap().path, DetectPath::Windowed);
-    assert!(d.visible());
 }
 #[test]
 fn auto_overlay_hides_on_focus_loss_and_returns() {
@@ -314,6 +379,213 @@ fn anchor_prefers_game_window() {
     d.on_foreground(fg(5, false));
     assert_eq!(d.anchor_hwnd(), Some(10));
 }
+#[test]
+fn windowed_app_is_never_candidate_even_with_the_overlay_on() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(3, false));
+    d.toggle();
+    assert_eq!(d.candidate_pid(), None);
+    d.on_presenting(3, CONFIRM_MS, 0);
+    assert!(d.game().is_none());
+}
+#[test]
+fn known_game_in_a_window_is_confirmed_and_auto_shown() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(kg(3));
+    assert_eq!(d.candidate_pid(), Some(3));
+    d.on_presenting(3, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(3));
+    assert!(d.visible());
+    d.on_foreground(fg(9, false));
+    assert!(!d.visible());
+    d.on_foreground(kg(3));
+    assert!(d.visible());
+}
+#[test]
+fn known_game_in_a_window_needs_auto_show_or_the_overlay() {
+    let mut d = GameDetector::new(false);
+    d.on_foreground(kg(3));
+    assert_eq!(d.candidate_pid(), None);
+    d.toggle();
+    assert_eq!(d.candidate_pid(), Some(3));
+}
+#[test]
+fn manual_overlay_over_fullscreen_with_auto_show_off_confirms_the_game() {
+    let mut d = GameDetector::new(false);
+    d.on_foreground(fg(4, true));
+    d.toggle();
+    d.on_presenting(4, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(4));
+}
+#[test]
+fn hide_outside_game_draws_the_manual_overlay_only_over_the_game() {
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    assert_eq!((d.is_on(), d.visible(), d.waiting()), (true, false, true));
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, CONFIRM_MS, 0);
+    assert_eq!((d.visible(), d.waiting()), (true, false));
+    d.on_foreground(fg(9, false));
+    assert_eq!((d.is_on(), d.visible(), d.waiting()), (true, false, true), "Alt+Tab hides the manual overlay too");
+    d.on_foreground(fg(1, true));
+    assert!(d.visible());
+    d.on_process_exited(1);
+    assert_eq!((d.is_on(), d.waiting()), (true, true));
+}
+#[test]
+fn turning_hide_outside_game_off_shows_the_waiting_overlay() {
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    d.set_hide_outside_game(false);
+    assert_eq!((d.visible(), d.waiting()), (true, false));
+}
+#[test]
+fn toggle_while_waiting_turns_the_overlay_off() {
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    d.toggle();
+    assert_eq!((d.is_on(), d.waiting()), (false, false));
+}
+#[test]
+fn turning_off_a_waiting_overlay_does_not_suppress_auto_show() {
+    let mut d = GameDetector::new(true);
+    d.set_hide_outside_game(true);
+    d.on_foreground(fg(1, true)); d.on_presenting(1, CONFIRM_MS, 0);
+    d.on_foreground(fg(9, false));
+    d.toggle();
+    assert!(d.waiting());
+    d.toggle();
+    d.on_foreground(fg(1, true));
+    assert!(d.visible(), "the overlay the user turned off was never drawn");
+}
+#[test]
+fn hide_outside_game_draws_the_manual_overlay_over_an_unconfirmed_game_like_window() {
+    // Vulkan, OpenGL or a child process presenting: no ETW presents, never confirmed.
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.on_foreground(fg(1, true));
+    d.toggle();
+    assert_eq!((d.visible(), d.waiting(), d.anchor_hwnd()), (true, false, Some(10)));
+    d.on_presenting(1, 0, 0);
+    d.on_presenting(1, 0, GIVE_UP_MS);
+    assert_eq!((d.candidate_pid(), gpid(&d)), (None, None));
+    assert!(d.visible(), "still drawn after the candidate is given up");
+    d.on_foreground(kg(3));
+    assert_eq!((d.visible(), d.waiting(), d.anchor_hwnd()), (true, false, Some(30)));
+}
+#[test]
+fn hide_outside_game_keeps_waiting_outside_game_like_windows() {
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    assert!(d.waiting(), "no foreground");
+    d.on_foreground(fg(9, false));
+    assert!(d.waiting(), "a windowed app that is not a known game");
+    d.on_foreground(Fg { ignored: true, ..fg(2, true) });
+    assert!(d.waiting(), "an ignored app, even fullscreen");
+}
+#[test]
+fn game_like_window_in_front_of_the_background_game_anchors_the_overlay() {
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    d.on_foreground(fg(1, true)); d.on_presenting(1, CONFIRM_MS, 0);
+    d.on_foreground(fg(2, true));
+    assert_eq!(gpid(&d), Some(1));
+    assert_eq!((d.visible(), d.anchor_hwnd()), (true, Some(20)));
+    d.on_foreground(fg(1, true));
+    assert_eq!((d.visible(), d.anchor_hwnd()), (true, Some(10)));
+}
+#[test]
+fn waiting_overlay_runs_nothing() {
+    use crate::effects::{Effects, plan_effects};
+    let mut d = GameDetector::new(false);
+    d.set_hide_outside_game(true);
+    d.toggle();
+    d.on_foreground(fg(9, false));
+    let m = crate::settings::Metrics::default();
+    assert_eq!(plan_effects(d.visible(), false, d.candidate_pid().is_some(), &m), Effects::default());
+}
+#[test]
+fn nominee_is_confirmed_in_the_background_and_shown_on_focus() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(peek());
+    d.nominate(3, 30);
+    assert_eq!(d.candidate_pid(), Some(3));
+    d.on_presenting(3, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(3));
+    assert_eq!(d.candidate_pid(), None);
+    assert!(!d.visible(), "not in front yet");
+    d.on_foreground(kg(3));
+    assert!(d.visible());
+}
+#[test]
+fn given_up_nominee_is_not_revived_by_focus_changes() {
+    let mut d = GameDetector::new(true);
+    d.nominate(3, 30);
+    d.on_presenting(3, 0, 0);
+    d.on_presenting(3, 0, GIVE_UP_MS);
+    assert_eq!(d.candidate_pid(), None);
+    d.on_foreground(peek());
+    assert_eq!(d.candidate_pid(), None);
+}
+#[test]
+fn nominee_that_exits_is_dropped() {
+    let mut d = GameDetector::new(true);
+    d.nominate(3, 30);
+    d.on_process_exited(3);
+    assert_eq!(d.candidate_pid(), None);
+}
+#[test]
+fn game_confirmed_in_the_background_drops_the_auto_overlay() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, CONFIRM_MS, 0);
+    assert!(d.visible());
+    d.nominate(3, 30);
+    d.on_presenting(3, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(3));
+    assert!(!d.visible(), "the new game is not in front");
+    d.on_foreground(kg(3));
+    assert!(d.visible());
+}
+#[test]
+fn nominating_the_detected_game_is_ignored() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, CONFIRM_MS, 0);
+    d.nominate(1, 10);
+    assert_eq!(d.candidate_pid(), None);
+    d.on_foreground(fg(2, true));
+    d.on_presenting(2, CONFIRM_MS, 0);
+    assert_eq!(gpid(&d), Some(2));
+    assert_eq!(d.candidate_pid(), None, "no lingering nominee comes back");
+}
+#[test]
+fn nominating_another_window_leaves_a_given_up_focused_window_given_up() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, 0, 0);
+    d.on_presenting(1, 0, GIVE_UP_MS);
+    d.nominate(3, 30);
+    assert_eq!(d.candidate_pid(), Some(3), "the timed-out window does not outrank the nominee");
+}
+#[test]
+fn nominating_the_given_up_window_re_arms_it() {
+    let mut d = GameDetector::new(true);
+    d.on_foreground(fg(1, true));
+    d.on_presenting(1, 0, 0);
+    d.on_presenting(1, 0, GIVE_UP_MS);
+    assert_eq!(d.candidate_pid(), None);
+    d.nominate(1, 10);
+    assert_eq!(d.candidate_pid(), Some(1));
+    d.on_presenting(1, CONFIRM_MS, GIVE_UP_MS + 3_000);
+    assert_eq!(gpid(&d), Some(1));
+    assert!(d.visible());
+}
 
     fn hide_and_confirm_tests_helper() -> GameDetector {
         let mut d = GameDetector::new(true);
@@ -366,14 +638,6 @@ fn anchor_prefers_game_window() {
         d.on_process_exited(1);
         assert!(d.visible());
         assert_eq!(d.candidate_pid(), None);
-    }
-    #[test]
-    fn manual_show_over_fullscreen_uses_fullscreen_path() {
-        let mut d = GameDetector::new(false);
-        d.on_foreground(fg(4, true));
-        d.toggle();
-        d.on_presenting(4, CONFIRM_MS, 0);
-        assert_eq!(d.game().unwrap().path, DetectPath::Fullscreen);
     }
 
     #[test]
