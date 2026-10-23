@@ -82,7 +82,12 @@ NVML is loaded only while the overlay is on screen and released when it hides. T
 
 ## Install
 
-Build the installers (below) and run `Peek_0.1.0_x64-setup.exe` or `Peek_0.1.0_x64_en-US.msi`. Both install per machine and ask for administrator rights — see [why](#why-administrator).
+Grab an installer from the [latest release](https://github.com/christiansmmc/peek-overlay/releases/latest), or build it yourself (below):
+
+- **`Peek_<version>_x64-setup.exe`** — the regular installer. Pick this one for your own PC.
+- **`Peek_<version>_x64_en-US.msi`** — Windows Installer package, for managed or silent deployment (`msiexec /i … /qn`).
+
+Both install per machine to `C:\Program Files\Peek` and ask for administrator rights — see [why](#why-administrator). Don't install both at once. The installers aren't code-signed, so SmartScreen may warn the first time.
 
 Uninstalling removes the app and its *Peek* logon task. Your settings stay in `%APPDATA%\Peek\settings.json`.
 
