@@ -123,6 +123,8 @@ The real-time ETW session that delivers present events (the FPS) and the PawnIO 
 - **FPS needs DXGI or D3D9.** Vulkan and OpenGL games show "—" for now.
 - **Game detection is a heuristic.** An unusual fullscreen app might be taken for a game.
 
+What's planned next — Vulkan/OpenGL FPS, signed installers, and a list of known small issues — is in [ROADMAP.md](ROADMAP.md).
+
 ## How it's built
 
 ```
