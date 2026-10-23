@@ -520,6 +520,11 @@ impl Controller {
     fn on_sample_tick(&self) {
         let (sample, overlay_shown, config_open) = {
             let mut g = self.inner();
+            // `sync` can turn the timer off (and pause the sensors) while this tick waits for
+            // `inner`; sampling now would load NVML again while hidden.
+            if !g.sent_timers.sample {
+                return;
+            }
             let sample = self.take_sample(&mut g);
             g.sample = sample.clone();
             (sample, g.sent_visible == Some(true), g.config_open)
@@ -791,6 +796,21 @@ mod tests {
             serde_json::json!({"overlayVisible": true, "gameName": null}),
             serde_json::json!({"overlayVisible": false, "gameName": null}),
         ]);
+    }
+
+    #[test]
+    fn sample_tick_after_the_timer_was_turned_off_takes_no_sample() {
+        // A tick the native thread queued before `sync` turned the timer off (and paused the
+        // sensors) must not sample, or it would load NVML again while hidden.
+        let (c, log, _dir) = controller(Settings::default());
+        c.inner().config_open = true;
+        assert!(!c.inner().sent_timers.sample);
+        c.on_native_event(NativeEvent::Timer(TimerKind::Sample));
+        assert!(log.payloads("metrics").is_empty(), "a stale tick took a sample");
+
+        c.inner().sent_timers.sample = true;
+        c.on_native_event(NativeEvent::Timer(TimerKind::Sample));
+        assert_eq!(log.payloads("metrics").len(), 1, "a tick of a running timer samples");
     }
 
     #[test]
