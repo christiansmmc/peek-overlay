@@ -124,8 +124,18 @@ export function App() {
         <StatusRow
           status={status}
           onToggle={() => api.setOverlayVisible(!status.overlayVisible)}
-          onMarkNotGame={() => api.markNotGame().catch((e) => console.error('mark_not_game failed:', e))}
-          onMarkGame={() => api.markGame().catch((e) => console.error('mark_game failed:', e))}
+          onMarkNotGame={() =>
+            api.markNotGame().catch((e) => {
+              console.error('mark_not_game failed:', e);
+              flash(String(e));
+            })
+          }
+          onMarkGame={() =>
+            api.markGame().catch((e) => {
+              console.error('mark_game failed:', e);
+              flash(String(e));
+            })
+          }
         />
         <Preview
           settings={settings}
