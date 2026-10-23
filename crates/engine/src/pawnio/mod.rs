@@ -11,9 +11,11 @@ use std::ffi::{CString, OsString};
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use windows::Win32::Foundation::{E_ACCESSDENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_SUCCESS, HANDLE};
+use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, REG_ROUTINE_FLAGS, RRF_RT_ANY, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
+use windows::Win32::UI::Shell::{FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
 use windows::core::{HRESULT, HSTRING, PCSTR};
 
 /// AMD families 17h to 1Ah: `ioctl_read_smn` (and `ioctl_read_msr`). See resources/pawnio/README.md.
@@ -26,11 +28,24 @@ const SERVICE_KEY: &str = r"SYSTEM\CurrentControlSet\Services\PawnIO";
 const LIB_NAME: &str = "PawnIOLib.dll";
 
 /// `PawnIOLib.dll` of the installed PawnIO: the installer's `InstallLocation`, else
-/// `%ProgramFiles%\PawnIO`. Only returns a path that exists.
+/// `Program Files\PawnIO`. Only returns a path that exists.
 pub fn find_lib() -> Option<PathBuf> {
     let registered = reg_path(UNINSTALL_KEY, "InstallLocation");
-    let default = std::env::var_os("ProgramFiles").map(|dir| PathBuf::from(dir).join("PawnIO"));
+    let default = program_files().map(|dir| dir.join("PawnIO"));
     [registered, default].into_iter().flatten().map(|dir| dir.join(LIB_NAME)).find(|lib| lib.is_file())
+}
+
+/// The machine's Program Files folder, from the shell rather than from `%ProgramFiles%`: this
+/// elevated process loads a DLL from there, and its environment is set by whoever started it.
+fn program_files() -> Option<PathBuf> {
+    // SAFETY: on success the shell returns a NUL-terminated string that this function owns
+    // and frees with CoTaskMemFree once copied.
+    unsafe {
+        let path = SHGetKnownFolderPath(&FOLDERID_ProgramFiles, KF_FLAG_DEFAULT, None).ok()?;
+        let dir = PathBuf::from(OsString::from_wide(path.as_wide()));
+        CoTaskMemFree(Some(path.0.cast_const().cast()));
+        Some(dir)
+    }
 }
 
 /// The driver service is registered and its user-mode library is in place.
@@ -182,6 +197,12 @@ fn reg_path(subkey: &str, value: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn program_files_is_the_machine_folder() {
+        let dir = program_files().expect("FOLDERID_ProgramFiles");
+        assert!(dir.is_absolute() && dir.is_dir(), "{dir:?}");
+        assert_eq!(dir.file_name(), Some(std::ffi::OsStr::new("Program Files")));
+    }
     #[test]
     fn embedded_modules_are_present() {
         assert!(AMD_FAMILY17_BIN.len() > 64 && INTEL_MSR_BIN.len() > 64);
