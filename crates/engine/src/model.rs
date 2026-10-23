@@ -60,6 +60,8 @@ pub struct Status {
     /// hidden until the detected game is in front.
     pub overlay_visible: bool,
     pub game_name: Option<String>,
+    /// Latest foreground app outside the built-in ignore list, offered to "marcar como jogo".
+    pub last_app_name: Option<String>,
     pub overlay_waiting: bool,
 }
 
@@ -88,7 +90,12 @@ mod tests {
     fn app_state_serializes_for_the_ui() {
         let st = AppState {
             settings: Settings::default(),
-            status: Status { overlay_visible: true, game_name: Some("The Witcher 3".into()), overlay_waiting: false },
+            status: Status {
+                overlay_visible: true,
+                game_name: Some("The Witcher 3".into()),
+                last_app_name: None,
+                overlay_waiting: false,
+            },
             availability: Availability { gpu_temp: Avail::NoSensor { reason: "x".into() }, ..Availability::all_ok() },
             driver: DriverState::Missing,
             hotkey_error: None,
@@ -97,6 +104,7 @@ mod tests {
         assert_eq!(v["status"]["overlayVisible"], true);
         assert_eq!(v["status"]["gameName"], "The Witcher 3");
         assert_eq!(v["status"]["overlayWaiting"], false);
+        assert!(v["status"]["lastAppName"].is_null());
         assert_eq!(v["availability"]["gpuTemp"], serde_json::json!({"state": "noSensor", "reason": "x"}));
         assert_eq!(v["availability"]["cpuUse"], serde_json::json!({"state": "ok"}));
         assert_eq!(v["driver"], "missing");

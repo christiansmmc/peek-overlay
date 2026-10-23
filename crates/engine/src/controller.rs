@@ -30,7 +30,7 @@ use crate::sensors::Sensors;
 use crate::settings::{self, Metrics, Settings};
 use crate::{pawnio, process_info};
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Instant;
 
@@ -48,6 +48,16 @@ pub fn startup_hotkey_error(combo: &[String], r: &Result<(), HotkeyError>) -> Op
     r.as_ref().err().map(|e| e.message(combo))
 }
 
+/// A foreground app that "marcar como jogo" can list and nominate.
+#[derive(Clone)]
+struct LastApp {
+    pid: u32,
+    hwnd: isize,
+    /// Normalized image path; `None` when it could not be read.
+    path: Option<String>,
+    name: String,
+}
+
 struct Inner {
     settings: Settings,
     /// Last status emitted to the UI.
@@ -61,8 +71,13 @@ struct Inner {
     config_open: bool,
     /// Display name of the detected game.
     game_name: Option<String>,
+    /// Normalized image path of the detected game, read with its name: what "não é jogo" lists.
+    game_path: Option<String>,
     /// Latest foreground window: fallback for the game's title once its window is gone.
     last_fg: Option<ForegroundInfo>,
+    /// Latest foreground app outside the built-in ignore list (apps on `notGames` count, so they
+    /// can be marked again).
+    last_app: Option<LastApp>,
     /// Game library folders outside the launcher markers, read once by `start`.
     libraries: LibraryRoots,
     /// Newest sample: refreshed by the graph timer and drawn first when the overlay shows.
@@ -182,7 +197,9 @@ impl Controller {
                 detector,
                 config_open: false,
                 game_name: None,
+                game_path: None,
                 last_fg: None,
+                last_app: None,
                 libraries: LibraryRoots::default(),
                 sample: MetricsSample::default(),
                 started: false,
@@ -314,6 +331,49 @@ impl Controller {
         if startup_changed {
             self.startup.request(settings.general.startup);
         }
+        self.sync();
+        self.emit("settings", &settings);
+        Ok(settings)
+    }
+
+    /// "Não é jogo": saves the detected game's executable on `notGames` and ends the game as if it
+    /// had closed. Emits `"settings"`.
+    pub fn mark_not_game(&self) -> Result<Settings, String> {
+        let settings = {
+            let mut g = self.inner();
+            // The game the UI was told about, whose path `retarget` read with its name.
+            let pid = g.synced_game.ok_or("Nenhum jogo detectado.")?;
+            let path = g.game_path.clone().ok_or("Caminho do jogo indisponível.")?;
+            let mut next = g.settings.clone();
+            next.game_rules.mark_not_game(&path);
+            settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
+            g.settings = next.clone();
+            g.detector.on_process_exited(pid);
+            next
+        };
+        self.sync();
+        self.emit("settings", &settings);
+        Ok(settings)
+    }
+
+    /// "Marcar como jogo": saves the last app's executable on `games` and, while its window is
+    /// open, nominates it so it is confirmed even in the background. Emits `"settings"`.
+    pub fn mark_game(&self) -> Result<Settings, String> {
+        let settings = {
+            let mut g = self.inner();
+            let Some(LastApp { pid, hwnd, path: Some(path), .. }) = g.last_app.clone() else {
+                return Err("Nenhum app para marcar.".into());
+            };
+            let mut next = g.settings.clone();
+            next.game_rules.mark_game(&path);
+            settings::save(&self.settings_path, &next).map_err(|e| e.to_string())?;
+            g.settings = next.clone();
+            // A closed window would only keep ETW running until its candidacy is given up.
+            if foreground::is_window_alive(hwnd) {
+                g.detector.nominate(pid, hwnd);
+            }
+            next
+        };
         self.sync();
         self.emit("settings", &settings);
         Ok(settings)
@@ -485,6 +545,13 @@ impl Controller {
             info.exe_name,
             info.covers_monitor
         );
+        // Named before taking `inner`: the name may come from the executable's version resource.
+        let last_app = (!process_info::is_ignored(&info.exe_name, &self.self_exe)).then(|| LastApp {
+            pid: info.pid,
+            hwnd: info.hwnd,
+            path: info.exe_path.as_deref().map(|p| normalize_path(&p.to_string_lossy())),
+            name: app_name(&info),
+        });
         {
             let mut g = self.inner();
             // A game whose exit can't be waited on (OpenProcess denied) ends when its window dies.
@@ -504,6 +571,9 @@ impl Controller {
                 ignored: class.ignored,
                 known_game: class.known_game,
             });
+            if last_app.is_some() {
+                g.last_app = last_app;
+            }
             g.last_fg = Some(info);
         }
         self.send(NativeCmd::Overlay(OverlayCmd::ReassertTopmost));
@@ -680,6 +750,7 @@ impl Controller {
             let status = Status {
                 overlay_visible: g.detector.is_on(),
                 game_name: g.game_name.clone(),
+                last_app_name: g.last_app.as_ref().map(|a| a.name.clone()),
                 overlay_waiting: g.detector.waiting(),
             };
             if status != g.status {
@@ -718,13 +789,15 @@ impl Controller {
         classify(&info.exe_name, path.as_deref(), &self.self_exe, &g.settings.game_rules, &g.libraries)
     }
 
-    /// Points the frame tracker at the new game (or none), names it and replaces the exit watch.
-    /// Returns the old watch, to be dropped once `inner` is released.
+    /// Points the frame tracker at the new game (or none), names it, reads its path and replaces
+    /// the exit watch. Returns the old watch, to be dropped once `inner` is released.
     fn retarget(&self, g: &mut Inner, game: Option<Game>, live: bool) -> Option<ExitWatch> {
         let pid = game.map(|x| x.pid);
         g.synced_game = pid;
         self.frames.set_target(pid);
-        g.game_name = game.map(|x| game_name(x, g.last_fg.as_ref()));
+        let exe_path = pid.and_then(process_info::exe_path);
+        g.game_name = game.map(|x| game_name(x, exe_path.as_deref(), g.last_fg.as_ref()));
+        g.game_path = exe_path.map(|p| normalize_path(&p.to_string_lossy()));
         crate::trace!("controller: game pid={pid:?} name={:?}", g.game_name);
         let old = g.exit_watch.take();
         if let Some(game) = game
@@ -750,12 +823,18 @@ impl Controller {
 }
 
 /// `FileDescription` of the executable, else the window title, else the exe name (spec 4.6).
-fn game_name(game: Game, last_fg: Option<&ForegroundInfo>) -> String {
+fn game_name(game: Game, exe_path: Option<&Path>, last_fg: Option<&ForegroundInfo>) -> String {
     let info = foreground::describe(game.hwnd).or_else(|| last_fg.filter(|f| f.pid == game.pid).cloned());
-    let description = process_info::exe_path(game.pid).as_deref().and_then(process_info::file_description);
+    let description = exe_path.and_then(process_info::file_description);
     let title = info.as_ref().map(|i| i.title.as_str());
     let exe = info.as_ref().map(|i| i.exe_name.as_str());
     process_info::display_name(description.as_deref(), title, exe)
+}
+
+/// The same chain for a foreground app, from what its focus event carries.
+fn app_name(info: &ForegroundInfo) -> String {
+    let description = info.exe_path.as_deref().and_then(process_info::file_description);
+    process_info::display_name(description.as_deref(), Some(&info.title), Some(&info.exe_name))
 }
 
 #[cfg(test)]
@@ -814,8 +893,8 @@ mod tests {
         c.set_overlay_visible(false);
         // "Hide outside the game" is on by default: with no game, the overlay waits.
         assert_eq!(log.payloads("status"), vec![
-            serde_json::json!({"overlayVisible": true, "gameName": null, "overlayWaiting": true}),
-            serde_json::json!({"overlayVisible": false, "gameName": null, "overlayWaiting": false}),
+            serde_json::json!({"overlayVisible": true, "gameName": null, "lastAppName": null, "overlayWaiting": true}),
+            serde_json::json!({"overlayVisible": false, "gameName": null, "lastAppName": null, "overlayWaiting": false}),
         ]);
     }
 
@@ -1030,6 +1109,80 @@ mod tests {
         c.update_settings(serde_json::json!({"general": {"hideOutsideGame": false}})).unwrap();
         assert_eq!(last()["overlayWaiting"], false);
         assert!(c.inner().detector.visible());
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn last_app_skips_this_app_and_ignored_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = Arc::new(Log::default());
+        let c = Controller::with_self_exe(Settings::default(), dir.path().join("settings.json"), log.clone(), "peek.exe".into());
+        let last = || log.payloads("status").last().cloned().unwrap()["lastAppName"].clone();
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, std::process::id(), false);
+        assert_eq!(last(), "Jogo Teste");
+        for exe in ["Peek.exe", "explorer.exe", "WindowsTerminal.exe"] {
+            let info = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: exe.into(), exe_path: None, title: "x".into(), covers_monitor: false };
+            c.on_native_event(NativeEvent::Foreground(info));
+        }
+        assert_eq!(last(), "Jogo Teste");
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn mark_not_game_lists_the_game_ends_it_and_persists() {
+        let (c, log, dir) = controller(Settings::default());
+        let hwnd = detect_game(&c, &log);
+        let saved = c.mark_not_game().unwrap();
+        assert_eq!(saved.game_rules.not_games, vec![me()]);
+        assert_eq!(crate::settings::load(&dir.path().join("settings.json")).0.game_rules.not_games, vec![me()]);
+        assert_eq!(shown(&log).last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": null})));
+        assert_eq!(log.payloads("settings").len(), 1);
+        focus(&c, hwnd, std::process::id(), true);
+        assert_eq!(c.inner().detector.candidate_pid(), None, "listed: never a candidate again");
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn mark_game_nominates_the_last_app_and_unlists_it() {
+        let rules = crate::settings::GameRules { not_games: vec![me()], ..Default::default() };
+        let (c, log, _dir) = controller(Settings { game_rules: rules, ..Settings::default() });
+        let pid = std::process::id();
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, pid, false);
+        // The tray click puts the shell in front; the settings window itself is never reported.
+        let shell = ForegroundInfo { hwnd: 1, pid: 4242, exe_name: "explorer.exe".into(), exe_path: None, title: String::new(), covers_monitor: false };
+        c.on_native_event(NativeEvent::Foreground(shell));
+        let saved = c.mark_game().unwrap();
+        assert_eq!((saved.game_rules.games, saved.game_rules.not_games), (vec![me()], vec![]));
+        assert_eq!(c.inner().detector.candidate_pid(), Some(pid));
+        present_and_tick(&c, pid);
+        assert_eq!(shown(&log).last(), Some(&serde_json::json!({"overlayVisible": false, "gameName": "Jogo Teste"})),
+                   "detected; it shows once it is in front");
+        destroy(hwnd);
+    }
+
+    #[test]
+    fn mark_game_on_a_closed_window_only_lists_it() {
+        let (c, _log, _dir) = controller(Settings::default());
+        let hwnd = top_level_window(windows::core::w!("Jogo Teste"));
+        focus(&c, hwnd, std::process::id(), false);
+        destroy(hwnd);
+        assert_eq!(c.mark_game().unwrap().game_rules.games, vec![me()]);
+        assert_eq!(c.inner().detector.candidate_pid(), None);
+    }
+
+    #[test]
+    fn marks_without_a_target_change_nothing() {
+        let (c, log, dir) = controller(Settings::default());
+        assert!(c.mark_game().is_err());
+        assert!(c.mark_not_game().is_err());
+        let hwnd = detect_game(&c, &log);
+        c.inner().game_path = None; // a game whose image path can't be read
+        assert!(c.mark_not_game().is_err());
+        assert_eq!(c.state().settings.game_rules, crate::settings::GameRules::default());
+        assert!(log.payloads("settings").is_empty());
+        assert!(!dir.path().join("settings.json").exists());
         destroy(hwnd);
     }
 
