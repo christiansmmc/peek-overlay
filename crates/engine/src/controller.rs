@@ -8,8 +8,10 @@
 //!   waiting for `inner` inside an event.
 //! - `FrameCapture::stop` (it joins the ETW threads), dropping an `ExitWatch` and UI events all
 //!   happen after `inner` is released.
+//! - `schtasks` runs on a `startup-task` thread (`autostart::TaskUpdater`), never on the
+//!   caller's; `shutdown` waits for a change still pending.
 
-use crate::autostart;
+use crate::autostart::{self, TaskUpdater};
 use crate::effects::{Effects, effective_metrics, plan_effects};
 use crate::frames::clock::now_ns;
 use crate::frames::etw::{CaptureError, FrameCapture, FrameShared};
@@ -112,6 +114,8 @@ pub struct Controller {
     native: Mutex<Option<Arc<NativeHandle>>>,
     /// Monotonic clock for the candidate's give-up time (`GameDetector::on_presenting`).
     epoch: Instant,
+    /// Creates or removes the logon task in the background.
+    startup: Arc<TaskUpdater>,
 }
 
 /// A panic on one thread must not take every later call down with it.
@@ -119,8 +123,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Creates or removes the logon task. Failing (no elevation in debug builds) is not an error
-/// for the user. Skipped in tests, which must never touch the machine's scheduled tasks.
+/// Creates or removes the logon task; blocking, so `TaskUpdater` runs it off the UI thread.
+/// Failing (no elevation in debug builds) is not an error for the user. Skipped in tests,
+/// which must never touch the machine's scheduled tasks.
 fn apply_startup(on: bool) {
     if cfg!(test) {
         return;
@@ -192,6 +197,7 @@ impl Controller {
             sync_gate: Mutex::new(()),
             native: Mutex::new(None),
             epoch: Instant::now(),
+            startup: TaskUpdater::new(apply_startup),
         })
     }
 
@@ -233,9 +239,9 @@ impl Controller {
         }
         // The first sync configures the overlay (creating its window) with the effective metrics.
         self.sync();
-        // Recreating the task refreshes the exe path and covers the first run. No lock is held.
+        // Recreating the task refreshes the exe path and covers the first run.
         if self.inner().settings.general.startup {
-            apply_startup(true);
+            self.startup.request(true);
         }
     }
 
@@ -268,6 +274,8 @@ impl Controller {
             capture.stop();
         }
         drop(watch);
+        // A startup toggle made just before "Sair" still reaches the task.
+        self.startup.flush();
     }
 
     pub fn state(&self) -> AppState {
@@ -294,9 +302,8 @@ impl Controller {
             g.settings = next.clone();
             (next, startup_changed)
         };
-        // `schtasks` takes ~100 ms: run it with `inner` released.
         if startup_changed {
-            apply_startup(settings.general.startup);
+            self.startup.request(settings.general.startup);
         }
         self.sync();
         self.emit("settings", &settings);

@@ -5,6 +5,7 @@ use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use windows::Win32::System::Threading::CREATE_NO_WINDOW;
 
 pub const TASK_NAME: &str = "Peek";
@@ -112,6 +113,51 @@ pub fn is_enabled() -> bool {
     schtasks(&["/Query", "/TN", TASK_NAME]).is_ok_and(|o| o.status.success())
 }
 
+/// Applies startup changes off the caller's thread (`schtasks` takes ~100 ms, too long for the
+/// UI thread), one run at a time. Requests made during a run collapse into the newest one,
+/// so the task always ends up as last requested.
+pub struct TaskUpdater {
+    /// The newest request not applied yet.
+    pending: Mutex<Option<bool>>,
+    /// Held during a run, so runs never overlap.
+    running: Mutex<()>,
+    apply: Box<dyn Fn(bool) + Send + Sync>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl TaskUpdater {
+    /// `apply(on)` creates (`true`) or removes (`false`) the task, blocking.
+    pub fn new(apply: impl Fn(bool) + Send + Sync + 'static) -> Arc<TaskUpdater> {
+        Arc::new(TaskUpdater { pending: Mutex::new(None), running: Mutex::new(()), apply: Box::new(apply) })
+    }
+
+    /// Queues `on` and returns at once; a `startup-task` thread applies it.
+    pub fn request(self: &Arc<Self>, on: bool) {
+        *lock(&self.pending) = Some(on);
+        let me = Arc::clone(self);
+        let spawned = std::thread::Builder::new().name("startup-task".into()).spawn(move || me.run_pending());
+        if spawned.is_err() {
+            self.run_pending();
+        }
+    }
+
+    /// Waits for a run in flight, then applies what is still pending. Blocking.
+    pub fn flush(&self) {
+        self.run_pending();
+    }
+
+    fn run_pending(&self) {
+        let _running = lock(&self.running);
+        let next = lock(&self.pending).take();
+        if let Some(on) = next {
+            (self.apply)(on);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +186,41 @@ mod tests {
         let path = a.to_path_buf();
         a.close().unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn updater_returns_at_once_runs_one_at_a_time_and_applies_the_newest_last() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex, mpsc};
+        use std::time::Duration;
+        let applied = Arc::new(Mutex::new(Vec::new()));
+        let (running, max_running) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let (started_tx, release_rx) = (Mutex::new(started_tx), Mutex::new(release_rx));
+        let updater = {
+            let (applied, running, max_running) = (applied.clone(), running.clone(), max_running.clone());
+            TaskUpdater::new(move |on| {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                max_running.fetch_max(now, Ordering::SeqCst);
+                let _ = started_tx.lock().unwrap().send(());
+                // Like schtasks, each run takes a while; the first one waits for the test.
+                let _ = release_rx.lock().unwrap().recv_timeout(Duration::from_secs(5));
+                applied.lock().unwrap().push(on);
+                running.fetch_sub(1, Ordering::SeqCst);
+            })
+        };
+        updater.request(true);
+        started_rx.recv_timeout(Duration::from_secs(5)).expect("the first request runs on its own thread");
+        // Requested while the first run is in flight: each returns at once, and they collapse.
+        updater.request(false);
+        updater.request(true);
+        updater.request(false);
+        release_tx.send(()).unwrap();
+        drop(release_tx);
+        updater.flush();
+        assert_eq!(*applied.lock().unwrap(), [true, false], "the first run, then only the newest request");
+        assert_eq!(max_running.load(Ordering::SeqCst), 1, "runs never overlap");
     }
 
     #[test]
