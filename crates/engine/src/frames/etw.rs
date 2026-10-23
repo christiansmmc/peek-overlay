@@ -143,8 +143,13 @@ impl FrameCapture {
         let _ = flusher.join();
         if let Err(e) = session.stop() {
             crate::trace!("etw: stopping the session failed: {e:?}");
+            // ferrisetw skips the stop when closing the trace fails, and ProcessTrace would
+            // then never return: stop the session by name so the join below cannot hang.
+            if let Err(e) = control_session(EVENT_TRACE_CONTROL_STOP) {
+                crate::trace!("etw: stopping the session by name failed: {e:?}");
+            }
         }
-        // ProcessTrace returns once the trace is closed.
+        // ProcessTrace returns once the trace is closed or the session stopped.
         let _ = processor.join();
     }
 }
