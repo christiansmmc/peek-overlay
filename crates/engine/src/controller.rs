@@ -620,6 +620,13 @@ impl Controller {
                     if timers.sample && !g.sent_timers.sample {
                         g.sample = self.take_sample(&mut g);
                     }
+                    // A sample timer that turns off lets the sensors free what only sampling uses.
+                    if !timers.sample
+                        && g.sent_timers.sample
+                        && let Some(sensors) = g.sensors.as_mut()
+                    {
+                        sensors.pause();
+                    }
                     g.sent_timers = timers;
                     cmds.push(NativeCmd::SetTimers(timers));
                 }

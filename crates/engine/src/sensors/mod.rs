@@ -1,5 +1,6 @@
-//! Hardware sensors: CPU and GPU usage via PDH and GPU temperature via D3DKMT, all without
-//! elevation; CPU temperature through the PawnIO driver, which needs elevation.
+//! Hardware sensors: CPU usage via PDH; GPU usage via PDH, or via NVML on NVIDIA adapters; GPU
+//! temperature via D3DKMT, all without elevation; CPU temperature through the PawnIO driver,
+//! which needs elevation.
 //!
 //! PDH rate counters need two collects, so each counter's first sample after `new()`, or after a
 //! pause longer than `MAX_SAMPLE_GAP` (the controller only samples while the overlay or the
@@ -10,14 +11,17 @@ pub mod cpu_temp;
 pub mod cpu_usage;
 pub mod gpu_temp;
 pub mod gpu_usage;
+pub mod nvml;
 
-pub use adapter::default_dedicated_luid;
+pub use adapter::{PciLoc, adapter_driver_store, adapter_pci_loc, adapter_vendor_id, default_dedicated_luid};
 pub use cpu_temp::{CpuKind, CpuTemp, cpu_kind, cpu_kind_from, intel_pkg_c, zen_tctl_c};
 pub use cpu_usage::CpuUsage;
 pub use gpu_temp::{deci_celsius_to_c, read_gpu_temp};
 pub use gpu_usage::{EngineInstance, GpuUsage, parse_engine_instance, pick_adapter_usage};
+pub use nvml::pick_nvml_device;
 
 use crate::model::{Avail, REASON_NO_CPU_COUNTERS, REASON_NO_GPU_COUNTERS, REASON_NO_GPU_TEMP};
+use nvml::NvmlUsage;
 use crate::settings::Metrics;
 use std::time::{Duration, Instant};
 use windows::Win32::System::Performance::{
@@ -37,8 +41,18 @@ pub fn luid_from_parts(high: i32, low: u32) -> Luid {
 pub struct SensorSample {
     pub cpu_use: Option<u8>,
     pub gpu_use: Option<u8>,
+    /// Where `gpu_use` came from, when there is one.
+    pub gpu_use_source: Option<GpuUseSource>,
     pub gpu_temp: Option<u8>,
     pub cpu_temp: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpuUseSource {
+    /// NVIDIA's driver (NVML): what Steam, Afterburner and RTSS show.
+    Nvml,
+    /// The WDDM 3D engines (PDH): what Task Manager shows.
+    Pdh,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -52,6 +66,7 @@ pub struct SensorAvailability {
 pub struct Sensors {
     cpu: Option<CpuUsage>,
     gpu: Option<GpuUsage>,
+    nvml: NvmlUsage,
     cpu_temp: Option<CpuTemp>,
     default_luid: Option<Luid>,
     availability: SensorAvailability,
@@ -87,7 +102,7 @@ impl Sensors {
             gpu_temp: if gpu_temp_ok { Avail::Ok } else { no_sensor(REASON_NO_GPU_TEMP) },
             cpu_temp: cpu_temp_avail,
         };
-        Sensors { cpu, gpu, cpu_temp, default_luid, availability }
+        Sensors { cpu, gpu, nvml: NvmlUsage::default(), cpu_temp, default_luid, availability }
     }
 
     /// Reopens the CPU temperature sensor, e.g. after PawnIO was installed.
@@ -103,8 +118,9 @@ impl Sensors {
         self.availability.clone()
     }
 
-    /// Reads only the metrics `wanted` asks for. The temperature comes from the adapter the usage
-    /// sample picked (the game's); without a usage sample it falls back to the dedicated adapter.
+    /// Reads only the metrics `wanted` asks for. PDH picks the GPU (the game's adapter); its usage
+    /// comes from NVML when that adapter is an NVIDIA device NVML identifies, else from PDH. The
+    /// temperature comes from the same adapter; without a usage sample, from the dedicated one.
     pub fn sample(&mut self, wanted: &Metrics, game_pid: Option<u32>) -> SensorSample {
         let cpu_use = if wanted.cpu_use { self.cpu.as_mut().and_then(CpuUsage::sample) } else { None };
         let usage = if wanted.gpu_use {
@@ -112,13 +128,29 @@ impl Sensors {
         } else {
             None
         };
+        let gpu_use = usage.map(|(luid, pdh)| match self.nvml.usage(luid) {
+            Some(nvml) => (nvml, GpuUseSource::Nvml),
+            None => (pdh, GpuUseSource::Pdh),
+        });
         let gpu_temp = if wanted.gpu_temp {
             usage.map(|(luid, _)| luid).or(self.default_luid).and_then(read_gpu_temp)
         } else {
             None
         };
         let cpu_temp = if wanted.cpu_temp { self.cpu_temp.as_ref().and_then(CpuTemp::read) } else { None };
-        SensorSample { cpu_use, gpu_use: usage.map(|(_, pct)| pct), gpu_temp, cpu_temp }
+        SensorSample {
+            cpu_use,
+            gpu_use: gpu_use.map(|(pct, _)| pct),
+            gpu_use_source: gpu_use.map(|(_, source)| source),
+            gpu_temp,
+            cpu_temp,
+        }
+    }
+
+    /// Sampling stopped (overlay hidden, settings closed): unloads NVML, which holds about 20 MB.
+    /// The next `sample` loads it again.
+    pub fn pause(&mut self) {
+        self.nvml.release();
     }
 }
 
