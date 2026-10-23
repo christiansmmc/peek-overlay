@@ -32,6 +32,6 @@ pub fn open(app: &AppHandle) {
                 }
             });
         }
-        Err(_e) => overlay_engine::trace!("config window failed: {_e}"),
+        Err(e) => overlay_engine::trace!("config window failed: {e}"),
     }
 }

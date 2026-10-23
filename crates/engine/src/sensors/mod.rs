@@ -76,8 +76,8 @@ impl Default for Sensors {
 impl Sensors {
     /// Opens every sensor it can; the ones that fail are reported by `availability()`.
     pub fn new() -> Sensors {
-        let cpu = CpuUsage::new().inspect_err(|_e| crate::trace!("cpu usage: {_e}")).ok();
-        let gpu = GpuUsage::new().inspect_err(|_e| crate::trace!("gpu usage: {_e}")).ok();
+        let cpu = CpuUsage::new().inspect_err(|e| crate::trace!("cpu usage: {e}")).ok();
+        let gpu = GpuUsage::new().inspect_err(|e| crate::trace!("gpu usage: {e}")).ok();
         let default_luid = default_dedicated_luid();
         let gpu_temp_ok = default_luid.and_then(read_gpu_temp).is_some();
         let (cpu_temp, cpu_temp_avail) = open_cpu_temp();

@@ -335,8 +335,8 @@ impl TextMeasure for Renderer {
         let mut m = DWRITE_TEXT_METRICS::default();
         match self.text_layout(text, size, weight, 0.0).and_then(|tl| unsafe { tl.GetMetrics(&mut m) }) {
             Ok(()) => m.widthIncludingTrailingWhitespace,
-            Err(_e) => {
-                crate::trace!("overlay: measuring {text:?} failed: {_e}");
+            Err(e) => {
+                crate::trace!("overlay: measuring {text:?} failed: {e}");
                 text.chars().count() as f32 * size * 0.55
             }
         }

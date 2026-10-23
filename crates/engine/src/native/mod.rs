@@ -424,8 +424,8 @@ fn with_overlay(hwnd: HWND, create: bool, f: impl FnOnce(&mut OverlayWindow)) {
                 o.set_display_listener(hwnd.0 as isize);
                 o
             }
-            Err(_e) => {
-                crate::trace!("overlay: window creation failed: {_e}");
+            Err(e) => {
+                crate::trace!("overlay: window creation failed: {e}");
                 return;
             }
         },

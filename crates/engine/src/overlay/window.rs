@@ -130,8 +130,8 @@ impl OverlayWindow {
     }
 
     fn redraw(&mut self) {
-        if let Err(_e) = self.try_redraw() {
-            crate::trace!("overlay: redraw failed: {_e}");
+        if let Err(e) = self.try_redraw() {
+            crate::trace!("overlay: redraw failed: {e}");
         }
     }
 

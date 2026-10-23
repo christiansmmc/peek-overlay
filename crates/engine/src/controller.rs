@@ -125,8 +125,8 @@ fn apply_startup(on: bool) {
     } else {
         autostart::disable()
     };
-    if let Err(_e) = result {
-        crate::trace!("controller: startup task not updated: {_e}");
+    if let Err(e) = result {
+        crate::trace!("controller: startup task not updated: {e}");
     }
 }
 
@@ -333,8 +333,8 @@ impl Controller {
         let settings = {
             let mut g = self.inner();
             g.settings.shortcut = combo;
-            if let Err(_e) = settings::save(&self.settings_path, &g.settings) {
-                crate::trace!("controller: saving the shortcut failed: {_e}");
+            if let Err(e) = settings::save(&self.settings_path, &g.settings) {
+                crate::trace!("controller: saving the shortcut failed: {e}");
             }
             g.hotkey_error = None;
             g.settings.clone()
@@ -404,8 +404,8 @@ impl Controller {
                     }
                     g.driver = DriverState::Installed;
                     g.settings.metrics.cpu_temp = true;
-                    if let Err(_e) = settings::save(&self.settings_path, &g.settings) {
-                        crate::trace!("controller: saving settings failed: {_e}");
+                    if let Err(e) = settings::save(&self.settings_path, &g.settings) {
+                        crate::trace!("controller: saving settings failed: {e}");
                     }
                     (g.availability.clone(), g.settings.clone())
                 };
@@ -414,8 +414,8 @@ impl Controller {
                 self.emit("settings", &settings);
                 self.emit("driver", &DriverState::Installed);
             }
-            Err(_e) => {
-                crate::trace!("controller: PawnIO install failed: {_e}");
+            Err(e) => {
+                crate::trace!("controller: PawnIO install failed: {e}");
                 self.inner().driver = DriverState::Failed;
                 self.emit("driver", &DriverState::Failed);
             }
@@ -563,8 +563,8 @@ impl Controller {
                         g.availability.fps = Avail::NoSensor { reason: REASON_NEEDS_ADMIN.into() };
                         events.push(("availability", json(&g.availability)));
                     }
-                    Err(CaptureError::Other(_e)) => {
-                        crate::trace!("controller: frame capture failed: {_e}");
+                    Err(CaptureError::Other(e)) => {
+                        crate::trace!("controller: frame capture failed: {e}");
                         g.capture_failed = true;
                     }
                 }

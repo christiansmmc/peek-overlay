@@ -17,7 +17,8 @@ pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Debug-only diagnostics: `eprintln!` in debug builds, expands to nothing in release.
+/// Debug-only diagnostics: `eprintln!` in debug builds. In release the arguments are still
+/// type-checked (so a variable used only here is not "unused") but never evaluated or printed.
 #[cfg(debug_assertions)]
 #[macro_export]
 macro_rules! trace {
@@ -27,7 +28,11 @@ macro_rules! trace {
 #[cfg(not(debug_assertions))]
 #[macro_export]
 macro_rules! trace {
-    ($($arg:tt)*) => {{}};
+    ($($arg:tt)*) => {{
+        if false {
+            let _ = format_args!($($arg)*);
+        }
+    }};
 }
 
 #[cfg(test)]
