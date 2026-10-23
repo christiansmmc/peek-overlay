@@ -82,7 +82,7 @@ NVML is loaded only while the overlay is on screen and released when it hides. T
 
 ## Install
 
-Build the installer (below) and run `Peek_0.1.0_x64-setup.exe`. It installs per machine and asks for administrator rights — see [why](#why-administrator).
+Build the installers (below) and run `Peek_0.1.0_x64-setup.exe` or `Peek_0.1.0_x64_en-US.msi`. Both install per machine and ask for administrator rights — see [why](#why-administrator).
 
 Uninstalling removes the app and its *Peek* logon task. Your settings stay in `%APPDATA%\Peek\settings.json`.
 
@@ -95,7 +95,7 @@ npm install
 npx tauri build
 ```
 
-The installer lands in `target/release/bundle/nsis/`.
+The installers land in `target/release/bundle/nsis/` (`.exe`) and `target/release/bundle/msi/` (`.msi`).
 
 ### Develop
 

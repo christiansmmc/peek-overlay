@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WiX fragment for the Peek MSI (bundle.windows.wix.fragmentPaths in tauri.conf.json).
+     "Iniciar com o Windows" creates an elevated "Peek" logon task: remove it on uninstall,
+     but not during a major upgrade (the new version recreates it on start).
+     WiX only links fragments that are referenced, so PeekCleanup is listed in
+     bundle.windows.wix.componentRefs; it only holds the folder keypath. -->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Fragment>
+    <CustomAction Id="PeekRemoveLogonTask" Directory="TARGETDIR" Execute="deferred" Impersonate="no" Return="ignore" ExeCommand="&quot;[SystemFolder]schtasks.exe&quot; /Delete /TN Peek /F" />
+
+    <InstallExecuteSequence>
+      <Custom Action="PeekRemoveLogonTask" Before="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+    </InstallExecuteSequence>
+
+    <DirectoryRef Id="INSTALLDIR">
+      <Component Id="PeekCleanup" Guid="7C1E5B52-3A0D-4F8E-9B64-2D5A91C0E7F3">
+        <CreateFolder />
+      </Component>
+    </DirectoryRef>
+  </Fragment>
+</Wix>
