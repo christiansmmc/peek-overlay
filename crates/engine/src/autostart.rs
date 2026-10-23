@@ -1,6 +1,7 @@
 //! Start with Windows (spec 4.7): a Task Scheduler logon task that runs the app elevated, so
 //! there is no UAC prompt at logon. Everything runs `schtasks` without a console window.
 
+use std::io::Write;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -64,6 +65,16 @@ fn utf16le_bom(s: &str) -> Vec<u8> {
     bytes
 }
 
+/// Writes the task definition to a new file in `%TEMP%` with a random name, created
+/// exclusively: an elevated `schtasks` reads it, so its path must not be predictable (a fixed
+/// name could be swapped before it is read). The file is deleted when the result is dropped.
+fn write_task_file(xml: &str) -> std::io::Result<tempfile::TempPath> {
+    let mut file = tempfile::Builder::new().prefix("peek-task-").suffix(".xml").tempfile()?;
+    file.write_all(&utf16le_bom(xml))?;
+    // Closed before schtasks opens it, whatever sharing mode schtasks asks for.
+    Ok(file.into_temp_path())
+}
+
 /// Creates or replaces the task (`/F`). Needs an elevated process (`HighestAvailable`).
 /// Blocking: it spawns `schtasks`.
 pub fn enable(exe: &Path) -> Result<(), String> {
@@ -72,11 +83,10 @@ pub fn enable(exe: &Path) -> Result<(), String> {
         std::env::var("USERDOMAIN").unwrap_or_default(),
         std::env::var("USERNAME").map_err(|e| format!("USERNAME: {e}"))?
     );
-    let file = std::env::temp_dir().join("perf-overlay-task.xml");
-    std::fs::write(&file, utf16le_bom(&task_xml(exe, &user))).map_err(|e| format!("writing {}: {e}", file.display()))?;
+    let file = write_task_file(&task_xml(exe, &user)).map_err(|e| format!("writing the task file: {e}"))?;
     let file_arg = file.to_string_lossy().into_owned();
     let out = schtasks(&["/Create", "/TN", TASK_NAME, "/XML", &file_arg, "/F"]);
-    let _ = std::fs::remove_file(&file);
+    let _ = file.close();
     let out = out.map_err(|e| format!("could not run schtasks: {e}"))?;
     if out.status.success() {
         Ok(())
@@ -116,6 +126,20 @@ mod tests {
                      r"<Command>C:\Program Files\A&amp;B\perf-overlay.exe</Command>"] {
             assert!(x.contains(want), "faltou {want}");
         }
+    }
+
+    #[test]
+    fn task_file_has_a_random_name_and_is_deleted_after_use() {
+        let a = write_task_file("<Task/>").unwrap();
+        let b = write_task_file("<Task/>").unwrap();
+        assert_ne!(a.to_path_buf(), b.to_path_buf());
+        assert_eq!(a.parent(), Some(std::env::temp_dir().as_path()));
+        let name = a.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("peek-task-") && name.ends_with(".xml") && name.len() > "peek-task-.xml".len(), "{name}");
+        assert_eq!(std::fs::read(&a).unwrap(), utf16le_bom("<Task/>"));
+        let path = a.to_path_buf();
+        a.close().unwrap();
+        assert!(!path.exists());
     }
 
     #[test]

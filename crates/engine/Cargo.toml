@@ -11,6 +11,8 @@ ferrisetw = "1"
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Random, exclusively created file names for the scheduled-task XML.
+tempfile = "3"
 # Matrix3x2/Vector2 used by the Direct2D API; same version the `windows` crate pulls.
 windows-numerics = "0.3"
 windows = { version = "0.62", features = [
@@ -39,7 +41,6 @@ windows = { version = "0.62", features = [
 ] }
 
 [dev-dependencies]
-tempfile = "3"
 # Only the fake_game example creates a D3D11 device; the library never does.
 windows = { version = "0.62", features = [
     "Win32_Graphics_Direct3D",
