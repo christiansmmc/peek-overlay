@@ -40,7 +40,7 @@ Ficam em `%APPDATA%\Peek\settings.json` e são gravadas a cada mudança.
 - Tela cheia exclusiva não é suportada: use janela sem borda (ou tela cheia em janela).
 - FPS só pra DXGI e D3D9. Jogos Vulkan e OpenGL mostram "—" no FPS por enquanto.
 - A detecção do jogo é uma heurística (janela em primeiro plano cobrindo o monitor, ignorando navegadores e o próprio app), então pode errar em casos incomuns.
-- A temperatura da CPU depende do driver [PawnIO](https://pawnio.eu/), que o app não instala: `winget install --id namazso.PawnIO`.
+- A temperatura da CPU depende do driver [PawnIO](https://pawnio.eu/), que não vem no instalador do Peek. Sem ele, a pílula "CPU temp." mostra "requer driver"; clicar nela abre a folha do driver, e "Instalar" baixa o pacote oficial pelo winget (`winget install --id namazso.PawnIO`), o que precisa de internet nesse momento. Também dá pra rodar esse comando à mão.
 
 ## Avisos de licença
 
