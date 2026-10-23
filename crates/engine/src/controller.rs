@@ -29,6 +29,7 @@ use crate::{pawnio, process_info};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::time::Instant;
 
 /// Columns of the frametime graph sent to the overlay (the Card's width; the Line downsamples).
 pub const GRAPH_COLUMNS: usize = 126;
@@ -109,6 +110,8 @@ pub struct Controller {
     inner: Mutex<Inner>,
     sync_gate: Mutex<()>,
     native: Mutex<Option<Arc<NativeHandle>>>,
+    /// Monotonic clock for the candidate's give-up time (`GameDetector::on_presenting`).
+    epoch: Instant,
 }
 
 /// A panic on one thread must not take every later call down with it.
@@ -188,6 +191,7 @@ impl Controller {
             }),
             sync_gate: Mutex::new(()),
             native: Mutex::new(None),
+            epoch: Instant::now(),
         })
     }
 
@@ -499,7 +503,8 @@ impl Controller {
             let mut g = self.inner();
             if let Some(pid) = g.detector.candidate_pid() {
                 let continuous_ms = lock(&self.frames.observer).continuous_ms(pid, now_ns());
-                g.detector.on_presenting(pid, continuous_ms);
+                let now_ms = self.epoch.elapsed().as_millis() as u64;
+                g.detector.on_presenting(pid, continuous_ms, now_ms);
             }
         }
         self.sync();
